@@ -276,12 +276,18 @@ class Game {
   }
 
   // One key for travel: a warp jump to the target shown under the crosshair, stopping at a safe distance.
-  // Held at a station, it lets go instead; in the nav computer, it flies to the selected destination.
+  // Held at a station, it lets go instead; right beside a station, it takes up the hold again for docking.
+  // In the nav computer, it flies to the selected destination.
   flyToTarget() {
     if (!this.simRunning || this.ship.isDocked || this.ship.isDestroyed) return;
     if (this.ui.navMap.isOpen) this.ui.navMap.warp();
-    else if (this.ship.autopilotActive) this.ship.toggleAutopilot();
+    else if (this.ship.autopilotActive || this.isBesideTargetStation()) this.ship.toggleAutopilot();
     else this.triggerWarpJump();
+  }
+
+  isBesideTargetStation() {
+    const target = this.ship.targetObject;
+    return !!target && target.kind === 'station' && target.mesh.position.distanceTo(this.ship.position) < arrivalRadius(target);
   }
 
   // Aiming at an object makes it the target, but only when the pilot turns the nose to it: objects drifting
@@ -528,7 +534,7 @@ class Game {
         if (target.kind === 'station') {
           this.ship.autopilotActive = true;
           if (!this.ui.tutorial.active) {
-            this.ui.tutorial.say('Autopilot hält vor der Station. W gleitet heran, G dockt an, X übernimmt die Steuerung.', 8000);
+            this.ui.tutorial.say('Du hältst vor der Station. W gleitet heran, G dockt an. Mit X, S oder der Maus fliegst du wieder weg.', 8000);
           }
         }
 

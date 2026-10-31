@@ -5,6 +5,12 @@ import { Tutorial } from './tutorial';
 import { NavMap } from './navMap';
 import { arrivalRadius } from './spaceship';
 
+const PROMPT_KEYS = {
+  travel: ['[X] Hinfliegen', '[T] Nächstes Ziel'],
+  hold: ['[W] Heranfliegen', '[S] Zurück', '[X] Loslassen'],
+  besideStation: ['[X] Andockposition', '[T] Nächstes Ziel'],
+};
+
 // Game units -> readable distance (arcade scale: 1 unit = 100.000 km)
 function formatDist(gameDistance) {
   const km = gameDistance * 100000;
@@ -40,6 +46,8 @@ export class UI {
     // Travel, autopilot and weapons
     this.travelPrompt = document.getElementById('hud-travel-prompt');
     this.travelName = document.getElementById('hud-travel-name');
+    this.travelKeys = document.getElementById('hud-travel-keys');
+    this.travelKeysShown = null;
     this.btnAutopilot = document.getElementById('btn-autopilot');
     this.autopilotStatus = document.getElementById('autopilot-status-indicator');
     this.weaponEnergyBar = document.getElementById('weapon-energy-bar');
@@ -658,15 +666,24 @@ export class UI {
     this.armorB.style.width = `${armorPct * 100}%`;
   }
 
+  // The keys that matter right now: fly to the target; held at a station, how to dock or get away;
+  // right beside a station, how to take up the hold again
   updateTravelPrompt(ship, target) {
-    let show = !!target && !ship.isDocked && !ship.isDestroyed && !ship.autopilotActive &&
-      !this.game.warpState && !this.game.dockableStation && !this.navMap.isOpen;
-    if (show) {
+    let keys = null;
+    if (target && !ship.isDocked && !ship.isDestroyed && !this.game.warpState && !this.navMap.isOpen) {
       const targetPos = target.group ? target.group.position : target.mesh.position;
-      show = targetPos.distanceTo(ship.position) >= arrivalRadius(target);
+      if (ship.stationHold) keys = PROMPT_KEYS.hold;
+      else if (ship.autopilotActive) keys = null; // still closing in on the hold point
+      else if (this.game.isBesideTargetStation()) keys = PROMPT_KEYS.besideStation;
+      else if (targetPos.distanceTo(ship.position) >= arrivalRadius(target)) keys = PROMPT_KEYS.travel;
     }
-    this.travelPrompt.classList.toggle('hidden', !show);
-    if (show) this.travelName.textContent = displayName(target.name).toUpperCase();
+    this.travelPrompt.classList.toggle('hidden', !keys);
+    if (!keys) return;
+    this.travelName.textContent = displayName(target.name).toUpperCase();
+    if (keys !== this.travelKeysShown) {
+      this.travelKeys.replaceChildren(...keys.map((text) => Object.assign(document.createElement('span'), { textContent: text })));
+      this.travelKeysShown = keys;
+    }
   }
 
   checkDockingPrompts(ship, solarSystem) {

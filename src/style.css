@@ -637,10 +637,11 @@ button:focus-visible {
   z-index: 15;
 }
 
-/* What X flies to: steady (not blinking like the dock alert), one line below it so both can coexist */
+/* The target and its keys: steady (not blinking like the dock alert), above the crosshair and the gravity
+   warning, since below it the radio panel takes the space on smaller screens */
 .hud-travel-prompt {
   position: absolute;
-  top: calc(40% + 124px);
+  top: calc(40% - 190px);
   left: 50%;
   transform: translateX(-50%);
   white-space: nowrap;

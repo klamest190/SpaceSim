@@ -9,6 +9,7 @@ const STANDOFF_GLIDE_SPEED = 1.5; // units/s the pilot closes or opens the gap t
 const DEPARTURE_RANGE = 4.5;  // closer than this to the station, cancelling counts as undocking
 const DEPARTURE_SPEED = 6.0;  // units/s outward push when the autopilot lets go of a station
 const DEPARTURE_TIME = 2.0;   // seconds of push before gravity and the stabilizer take over again
+const HOLD_RELEASE_MOUSE = 10; // pixels of mouse movement in one frame that count as steering away from a hold
 
 // Radius of a body's gravity field (also the range in which it is the stabilizer's reference frame)
 export function gravityRadius(p) {
@@ -358,15 +359,24 @@ export class Spaceship {
     if (this.departureTime > 0) this.departureTime = Math.max(0, this.departureTime - delta);
 
     // Manual throttle while parked or close to a station: the pilot takes over, the autopilot lets go safely.
-    // Parked at a station, W / S instead glide the ship in and out, so docking stays a deliberate pilot move.
+    // Parked at a station, W / S instead glide the ship in and out, so docking stays a deliberate pilot move;
+    // backing out past the waiting point with S lets go, so the hold is never a trap.
     const throttleInput = controls.keys.throttleUp || controls.keys.throttleDown;
     if (this.autopilotActive && throttleInput && this.holdTarget === this.targetObject) {
-      if (this.stationHold) {
+      if (this.stationHold && controls.keys.throttleDown && this.holdStandoff >= STATION_HOLD_STANDOFF) {
+        this.toggleAutopilot();
+      } else if (this.stationHold) {
         const glide = (controls.keys.throttleDown ? 1 : -1) * STANDOFF_GLIDE_SPEED * delta;
         this.holdStandoff = THREE.MathUtils.clamp(this.holdStandoff + glide, DOCK_STANDOFF, STATION_HOLD_STANDOFF);
       } else if (this.planetHold || this.isStationApproach()) {
         this.toggleAutopilot();
       }
+    }
+
+    // Steering with the mouse means the pilot wants the stick back: any hold lets go
+    const steering = Math.abs(controls.mouseDelta.x) + Math.abs(controls.mouseDelta.y) > HOLD_RELEASE_MOUSE;
+    if (this.autopilotActive && steering && !controls.keys.freeLook && this.isHolding()) {
+      this.toggleAutopilot();
     }
 
     if (!this.autopilotActive) {

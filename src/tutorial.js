@@ -18,7 +18,7 @@ const STEPS = [
     done: (ship, ctx) => (ship.autopilotActive && ship.targetObject?.kind === 'station') || !!ctx.dockable
   },
   {
-    text: 'Du hältst vor der Station. Halte W, um heranzugleiten. Sobald die Andock-Anzeige erscheint, drücke G.',
+    text: 'Du hältst vor der Station. Halte W, um heranzugleiten. Sobald die Andock-Anzeige erscheint, drücke G. Wegfliegen geht mit X, S oder der Maus.',
     done: ship => ship.isDocked
   }
 ];
