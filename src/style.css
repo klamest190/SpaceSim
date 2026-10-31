@@ -1,0 +1,1477 @@
+/* Solaris: Privateer-style cockpit.
+   Two materials only: painted gunmetal (bezels, console, switches)
+   and CRT glass (every screen). Stencil type lives on metal, VT323 lives on glass. */
+
+:root {
+  --metal-deep: #24221d;
+  --metal: #4a463e;
+  --metal-hi: #6b665b;
+  --metal-edge: #8c8676;
+  --paint: #d9d2bd;
+  --screen: #030805;
+  --phosphor: #5cff7a;
+  --phosphor-dim: rgba(92, 255, 122, 0.5);
+  --phosphor-faint: rgba(92, 255, 122, 0.14);
+  --amber: #ffb000;
+  --alarm: #ff3b2f;
+  --font-screen: 'VT323', monospace;
+  --font-plate: 'Saira Stencil One', sans-serif;
+
+  --metal-surface:
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.02) 0 1px, transparent 1px 3px),
+    linear-gradient(180deg, var(--metal-hi) 0%, var(--metal) 28%, #3b382f 100%);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  user-select: none;
+}
+
+body {
+  background-color: #000;
+  color: var(--phosphor);
+  font-family: var(--font-screen);
+  overflow: hidden;
+  width: 100vw;
+  height: 100vh;
+}
+
+#space-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+}
+
+.hidden {
+  display: none !important;
+}
+
+button {
+  font: inherit;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 3px;
+}
+
+.amber-text {
+  color: var(--amber);
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.55);
+}
+
+/* ==========================================================================
+   Materials
+   ========================================================================== */
+
+/* Gunmetal bezel that holds a screen */
+.bezel {
+  position: relative;
+  background: var(--metal-surface);
+  border: 1px solid #15130f;
+  border-radius: 4px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.45),
+    0 10px 30px rgba(0, 0, 0, 0.65);
+  padding: 8px 12px 12px;
+}
+
+/* Stenciled paint on metal */
+.plate-label {
+  font-family: var(--font-plate);
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--paint);
+  opacity: 0.82;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.7);
+  margin: 0 0 6px 2px;
+  line-height: 1;
+}
+
+/* Rivets in bezel corners */
+.rivet {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #c9c2ad 0 1px, #7d7868 2px, #2a2722 4px);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+.rivet.tl { top: 6px; left: 6px; }
+.rivet.tr { top: 6px; right: 6px; }
+.rivet.bl { bottom: 6px; left: 6px; }
+.rivet.br { bottom: 6px; right: 6px; }
+
+/* CRT glass: curved, scanlined, glowing */
+.vdu {
+  position: relative;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 50% 42%, #0b1c10 0%, var(--screen) 78%);
+  border-radius: 12px / 16px;
+  box-shadow:
+    inset 0 0 22px rgba(0, 0, 0, 0.95),
+    inset 0 0 2px rgba(92, 255, 122, 0.35),
+    0 0 0 2px #100f0c,
+    0 0 0 3px #5e5a4f;
+  color: var(--phosphor);
+  text-shadow: 0 0 5px rgba(92, 255, 122, 0.55);
+  font-family: var(--font-screen);
+}
+
+/* Scanlines + vignette */
+.vdu::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+  background:
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.3) 0 1px, transparent 1px 3px),
+    radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.55) 100%);
+  animation: vduFlicker 7s steps(1) infinite;
+}
+
+/* Glass reflection */
+.vdu::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+  background: linear-gradient(165deg, rgba(255, 255, 255, 0.07) 0%, transparent 38%);
+  border-radius: inherit;
+}
+
+@keyframes vduFlicker {
+  0%, 100% { opacity: 1; }
+  41% { opacity: 0.86; }
+  42% { opacity: 1; }
+  77% { opacity: 0.92; }
+  78% { opacity: 1; }
+}
+
+/* Physical push buttons on metal */
+.metal-btn {
+  font-family: var(--font-plate);
+  font-size: 0.95rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--paint);
+  background: linear-gradient(180deg, #7a7466 0%, #504b41 100%);
+  border: 1px solid #15130f;
+  border-radius: 3px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 3px 0 #15130f;
+  padding: 10px 22px;
+  cursor: pointer;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.6);
+}
+
+.metal-btn:hover {
+  background: linear-gradient(180deg, #878072 0%, #5a554a 100%);
+}
+
+.metal-btn:active {
+  transform: translateY(3px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 0 0 #15130f;
+}
+
+.metal-btn.primary {
+  color: #2a1a00;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.35);
+  background: linear-gradient(180deg, #ffc94a 0%, #e09400 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 3px 0 #6b4700, 0 0 18px rgba(255, 176, 0, 0.35);
+}
+
+.metal-btn.primary:hover {
+  background: linear-gradient(180deg, #ffd56e 0%, #f0a400 100%);
+}
+
+.metal-btn.danger {
+  color: #ffeee8;
+  background: linear-gradient(180deg, #c2402f 0%, #8a241b 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 3px 0 #4a120c;
+}
+
+.metal-btn.danger:hover {
+  background: linear-gradient(180deg, #d44c3a 0%, #9a2b20 100%);
+}
+
+/* ==========================================================================
+   Overlays (start, station, game over)
+   ========================================================================== */
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.35) 0%, rgba(0, 0, 0, 0.85) 100%);
+}
+
+/* Start: let the turning solar system show through */
+.overlay-start {
+  background: radial-gradient(ellipse at center, transparent 25%, rgba(0, 0, 0, 0.7) 100%);
+}
+
+.start-bezel {
+  width: min(560px, 92vw);
+  padding: 12px 16px 18px;
+}
+
+.start-vdu {
+  padding: 44px 36px 30px;
+  text-align: center;
+}
+
+.logo {
+  font-family: var(--font-screen);
+  font-weight: 400;
+  font-size: clamp(4rem, 12vw, 7rem);
+  line-height: 0.9;
+  letter-spacing: 0.16em;
+  margin-right: -0.16em; /* optically recentre tracked text */
+  color: var(--amber);
+  text-shadow: 0 0 10px rgba(255, 176, 0, 0.7), 0 0 34px rgba(255, 140, 0, 0.35);
+}
+
+.tagline {
+  font-size: 1.45rem;
+  margin-top: 10px;
+}
+
+.save-summary {
+  display: inline-grid;
+  grid-template-columns: auto auto;
+  gap: 0 18px;
+  margin-top: 26px;
+  font-size: 1.35rem;
+  text-align: left;
+}
+
+.save-summary span {
+  color: var(--phosphor-dim);
+}
+
+.save-summary b {
+  font-weight: 400;
+  text-align: right;
+  color: var(--amber);
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.55);
+}
+
+.start-actions {
+  position: relative;
+  z-index: 5; /* above glass overlays */
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  margin: 30px 0 22px;
+  flex-wrap: wrap;
+}
+
+.start-note {
+  font-size: 1.15rem;
+  color: var(--phosphor-dim);
+}
+
+/* ==========================================================================
+   HUD
+   ========================================================================== */
+
+#hud {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.cockpit-visor {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+  box-shadow: inset 0 0 90px rgba(0, 0, 0, 0.85), inset 0 0 20px rgba(0, 0, 0, 0.9);
+  transition: opacity 0.3s ease, visibility 0.3s;
+}
+
+/* The cockpit is one rigid layer: JS shifts it against head-look, so its metal
+   parts run far past the screen edges and never show a gap when you look around. */
+.cockpit-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+  will-change: transform;
+  transition: opacity 0.3s ease, visibility 0.3s;
+}
+
+#hud.view-external .cockpit-layer,
+#hud.view-external .cockpit-visor {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* Canopy glass: faint sheen and edge tint, sells the window */
+.canopy-glass {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(104deg, transparent 30%, rgba(190, 220, 255, 0.035) 41%, transparent 49%),
+    linear-gradient(104deg, transparent 52%, rgba(190, 220, 255, 0.02) 56%, transparent 60%),
+    radial-gradient(ellipse at 50% 40%, transparent 55%, rgba(40, 60, 70, 0.12) 100%);
+}
+
+/* Overhead canopy rail */
+.canopy-rail {
+  position: absolute;
+  top: -100vh;
+  left: -100vw;
+  right: -100vw;
+  height: calc(100vh + 44px);
+  background:
+    linear-gradient(180deg, transparent calc(100% - 6px), rgba(0, 0, 0, 0.55) calc(100% - 6px), rgba(0, 0, 0, 0.55) calc(100% - 3px), var(--metal-edge) calc(100% - 3px)),
+    var(--metal-surface);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.6);
+}
+
+/* Canopy pillars lean in toward the rail */
+.canopy-pillar {
+  position: absolute;
+  top: 30px;
+  bottom: 210px;
+  width: 14vw;
+  background:
+    linear-gradient(90deg, #1b1a16 0%, #3b382f 18%, var(--metal-hi) 42%, var(--metal) 60%, #2a2822 88%, #141310 100%);
+}
+
+.canopy-pillar.left {
+  left: -2vw;
+  clip-path: polygon(57% 0, 86% 0, 32% 100%, 0 100%);
+}
+
+.canopy-pillar.right {
+  right: -2vw;
+  clip-path: polygon(14% 0, 43% 0, 100% 100%, 68% 100%);
+}
+
+/* Metal under the console, only visible when looking down */
+.cockpit-skirt {
+  position: absolute;
+  top: 100%;
+  left: -100vw;
+  right: -100vw;
+  height: 100vh;
+  background: linear-gradient(180deg, #3b382f 0%, #24221d 100%);
+}
+
+/* ==========================================================================
+   External view (zoomed out, no cockpit)
+   ========================================================================== */
+
+.external-hud {
+  position: absolute;
+  left: 22px;
+  bottom: 22px;
+  width: 270px;
+  padding: 8px 14px 10px;
+  z-index: 9;
+  pointer-events: none;
+  background: rgba(3, 8, 5, 0.55);
+  border: 1px solid var(--phosphor-faint);
+  border-radius: 8px / 10px;
+  font-size: 1.15rem;
+  line-height: 1.15;
+  text-shadow: 0 0 5px rgba(92, 255, 122, 0.55);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.3s ease, visibility 0.3s;
+}
+
+#hud.view-external .external-hud {
+  opacity: 1;
+  visibility: visible;
+}
+
+.ext-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ext-row span {
+  color: var(--phosphor-dim);
+}
+
+.ext-row b {
+  font-weight: 400;
+  color: var(--amber);
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ext-hint {
+  margin-top: 6px;
+  font-size: 1rem;
+  color: var(--phosphor-dim);
+}
+
+/* Where the guns point, projected from the ship's nose */
+.ext-aim {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  margin: -11px 0 0 -11px;
+  z-index: 7;
+  pointer-events: none;
+  border: 1px solid rgba(255, 176, 0, 0.75);
+  border-radius: 50%;
+  box-shadow: 0 0 6px rgba(255, 176, 0, 0.4);
+}
+
+.ext-aim::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 3px;
+  height: 3px;
+  margin: -1.5px 0 0 -1.5px;
+  background: var(--amber);
+  border-radius: 50%;
+}
+
+#hud.view-external .comm-bezel {
+  bottom: 40px;
+}
+
+/* Overhead switch panel */
+.hud-top-bar {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  padding: 8px 18px 10px;
+  z-index: 20;
+  pointer-events: auto;
+  background: var(--metal-surface);
+  border: 1px solid #15130f;
+  border-top: 0;
+  border-radius: 0 0 6px 6px;
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.45), 0 6px 18px rgba(0, 0, 0, 0.6);
+}
+
+.hud-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-plate);
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  color: var(--paint);
+  background: linear-gradient(180deg, #5e594e 0%, #3f3b33 100%);
+  border: 1px solid #15130f;
+  border-radius: 3px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 2px 0 #15130f;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+/* Indicator lamp */
+.hud-btn::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #3b1712;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.6);
+  flex-shrink: 0;
+}
+
+.hud-btn.active::before {
+  background: var(--phosphor);
+  box-shadow: 0 0 6px var(--phosphor), 0 0 12px rgba(92, 255, 122, 0.5);
+}
+
+.hud-btn:active {
+  transform: translateY(2px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+
+/* Center gun sight */
+.hud-center-sight {
+  position: absolute;
+  top: 40%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 300px;
+  height: 300px;
+  z-index: 4;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.gun-sight {
+  position: relative;
+  width: 140px;
+  height: 140px;
+  border: 2px solid rgba(255, 176, 0, 0.3);
+  border-radius: 50%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.sight-reticle {
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--amber);
+  border-radius: 50%;
+  position: relative;
+}
+
+.sight-reticle::before,
+.sight-reticle::after {
+  content: '';
+  position: absolute;
+  background: var(--amber);
+}
+
+.sight-reticle::before { left: -20px; top: 1px; width: 15px; height: 2px; }
+.sight-reticle::after { left: 1px; top: -20px; width: 2px; height: 15px; }
+
+.pitch-ticks {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  height: 100px;
+  font-size: 0.95rem;
+  color: rgba(255, 176, 0, 0.45);
+}
+
+.laser-flash {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  background: radial-gradient(circle, rgba(255, 59, 47, 0.9) 0%, rgba(255, 0, 0, 0) 70%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.05s ease-out;
+}
+
+#laser-flash-l { left: -60px; top: 60px; }
+#laser-flash-r { right: -60px; top: 60px; }
+
+/* Target box in 3D space */
+.target-reticle {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 3;
+  text-align: center;
+}
+
+.reticle-box {
+  width: 45px;
+  height: 45px;
+  margin: 0 auto;
+  border: 1px solid var(--alarm);
+  position: relative;
+  box-shadow: 0 0 8px rgba(255, 59, 47, 0.45);
+}
+
+.reticle-box::before,
+.reticle-box::after {
+  content: '';
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--alarm);
+}
+.reticle-box::before { top: -3px; left: -3px; border-right: 0; border-bottom: 0; }
+.reticle-box::after { bottom: -3px; right: -3px; border-left: 0; border-top: 0; }
+
+.reticle-label {
+  font-size: 1.05rem;
+  color: var(--alarm);
+  margin-top: 4px;
+  line-height: 1;
+  text-shadow: 0 0 5px rgba(255, 59, 47, 0.6), 0 0 2px #000;
+}
+
+.reticle-dist {
+  color: var(--amber);
+  text-shadow: 0 0 5px rgba(255, 176, 0, 0.5), 0 0 2px #000;
+}
+
+/* Alerts */
+.hud-alert-prompt {
+  position: absolute;
+  top: calc(40% + 80px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  background: rgba(3, 8, 5, 0.8);
+  border: 1px solid var(--phosphor);
+  color: var(--phosphor);
+  padding: 4px 14px;
+  font-size: 1.45rem;
+  text-shadow: 0 0 6px rgba(92, 255, 122, 0.7);
+  box-shadow: 0 0 14px rgba(92, 255, 122, 0.25);
+  animation: lampBlink 1s steps(1) infinite;
+  z-index: 15;
+}
+
+.hud-gravity-warning {
+  position: absolute;
+  top: calc(40% - 126px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20, 3, 2, 0.8);
+  border: 1px solid var(--alarm);
+  color: var(--alarm);
+  padding: 2px 14px;
+  font-size: 1.35rem;
+  letter-spacing: 0.12em;
+  text-shadow: 0 0 8px rgba(255, 59, 47, 0.7);
+  animation: lampBlink 0.6s steps(1) infinite;
+  z-index: 15;
+}
+
+@keyframes lampBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* Comm VDU: radio messages */
+.comm-bezel {
+  position: absolute;
+  bottom: 258px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(620px, 92vw);
+  padding: 7px 10px 10px;
+  z-index: 12;
+}
+
+.comm-screen {
+  padding: 10px 16px 12px;
+  min-height: 64px;
+}
+
+#comm-text {
+  position: relative;
+  z-index: 2;
+  font-size: 1.4rem;
+  line-height: 1.12;
+  color: var(--amber);
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.6);
+}
+
+#comm-text::after {
+  content: '\2588';
+  margin-left: 2px;
+  font-size: 0.85em;
+  animation: lampBlink 0.9s steps(1) infinite;
+}
+
+/* Flight manual */
+.controls-overlay-hud {
+  position: absolute;
+  left: 18px;
+  top: 64px;
+  width: 260px;
+  padding: 12px 16px;
+  z-index: 30;
+  pointer-events: auto;
+  background: rgba(3, 8, 5, 0.9);
+  border-radius: 10px / 14px;
+  box-shadow: 0 0 0 2px #100f0c, 0 0 0 7px var(--metal), 0 0 0 8px #15130f, 0 10px 30px rgba(0, 0, 0, 0.7);
+  text-shadow: 0 0 5px rgba(92, 255, 122, 0.5);
+}
+
+.overlay-header {
+  font-size: 1.3rem;
+  color: var(--amber);
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.55);
+  border-bottom: 1px solid var(--phosphor-faint);
+  padding-bottom: 4px;
+  margin-bottom: 8px;
+}
+
+.overlay-keys-list {
+  list-style: none;
+}
+
+.overlay-keys-list li {
+  font-size: 1.1rem;
+  line-height: 1.25;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.overlay-keys-list li span {
+  color: var(--amber);
+}
+
+/* Passive markers */
+.passive-hud-marker {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+  z-index: 6; /* below the console and comm screen */
+}
+
+.passive-hud-marker .marker-icon {
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--phosphor-dim);
+  margin-bottom: 3px;
+}
+
+.passive-hud-marker .marker-icon.planet-icon {
+  border-radius: 50%;
+}
+
+.passive-hud-marker .marker-icon.station-icon {
+  border-color: var(--phosphor);
+  transform: rotate(45deg);
+}
+
+.passive-hud-marker .marker-icon.ship-icon {
+  border: 1px solid var(--amber);
+  background: rgba(255, 176, 0, 0.25);
+  clip-path: polygon(50% 0%, 0% 100%, 100% 100%);
+  width: 14px;
+  height: 12px;
+}
+
+.passive-hud-marker .marker-label {
+  font-size: 1rem;
+  line-height: 1;
+  color: rgba(92, 255, 122, 0.7);
+  text-shadow: 0 0 3px #000, 0 0 1px #000;
+}
+
+/* ==========================================================================
+   Bottom console
+   ========================================================================== */
+
+.cockpit-dashboard {
+  position: absolute;
+  left: -100vw;
+  right: -100vw;
+  bottom: 0;
+  height: 244px;
+  z-index: 10;
+  pointer-events: auto;
+  display: grid;
+  grid-template-columns: 220px 1fr 1fr 250px;
+  gap: 14px;
+  padding: 24px calc(100vw + 3.5vw) 14px;
+  background:
+    radial-gradient(circle at 18px 30px, #b9b29d 0 1px, #6d6859 2px, #24221d 3.5px, transparent 4.5px),
+    radial-gradient(circle at calc(100% - 18px) 30px, #b9b29d 0 1px, #6d6859 2px, #24221d 3.5px, transparent 4.5px),
+    radial-gradient(circle at 18px calc(100% - 12px), #b9b29d 0 1px, #6d6859 2px, #24221d 3.5px, transparent 4.5px),
+    radial-gradient(circle at calc(100% - 18px) calc(100% - 12px), #b9b29d 0 1px, #6d6859 2px, #24221d 3.5px, transparent 4.5px),
+    var(--metal-surface);
+  clip-path: polygon(0 26px, 26px 0, calc(100% - 26px) 0, 100% 26px, 100% 100%, 0 100%);
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.18);
+}
+
+.dash-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.dash-panel .vdu {
+  flex: 1;
+  min-height: 0;
+  padding: 8px 12px;
+}
+
+.vdu-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+/* Target VDU */
+.target-vdu {
+  display: flex;
+  flex-direction: column;
+}
+
+.target-screen-container {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+#target-wireframe-canvas {
+  max-width: 100%;
+  max-height: 100%;
+  filter: drop-shadow(0 0 3px rgba(92, 255, 122, 0.5));
+}
+
+.target-stats {
+  font-size: 1.1rem;
+  line-height: 1.05;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.stat-row:first-child {
+  justify-content: center;
+}
+
+/* Systems VDU */
+.systems-vdu {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  font-size: 1.15rem;
+  line-height: 1.1;
+}
+
+.weapon-name {
+  color: var(--phosphor);
+}
+
+.weapon-status {
+  color: var(--amber);
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.55);
+}
+
+.energy-gauge {
+  height: 8px;
+  border: 1px solid var(--phosphor-dim);
+  margin: 2px 0 4px;
+}
+
+.energy-bar {
+  height: 100%;
+  background: var(--phosphor);
+  box-shadow: 0 0 6px var(--phosphor);
+  transition: width 0.1s linear;
+}
+
+.autopilot-status {
+  color: var(--amber);
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.55);
+}
+
+.autopilot-status.engaged {
+  color: var(--phosphor);
+  text-shadow: 0 0 8px rgba(92, 255, 122, 0.8);
+  animation: lampBlink 1.2s steps(1) infinite;
+}
+
+.pilot-stats {
+  border-top: 1px solid var(--phosphor-faint);
+  padding-top: 3px;
+}
+
+.autopilot-btn {
+  margin-top: 8px;
+  font-size: 0.72rem;
+  padding: 6px 10px;
+}
+
+.autopilot-btn.active {
+  color: #2a1a00;
+  background: linear-gradient(180deg, #ffc94a 0%, #e09400 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 1px 0 #6b4700, 0 0 14px rgba(255, 176, 0, 0.4);
+  transform: translateY(2px);
+}
+
+/* Shields & drive VDU */
+.flight-vdu {
+  display: grid;
+  grid-template-columns: 112px 1fr;
+  gap: 12px;
+  align-items: center;
+}
+
+.shield-armor-display {
+  position: relative;
+  width: 110px;
+  height: 110px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.ship-wireframe-icon {
+  width: 40px;
+  height: 50px;
+  border: 1px solid var(--phosphor-dim);
+  position: relative;
+  clip-path: polygon(50% 0%, 100% 75%, 80% 100%, 50% 85%, 20% 100%, 0% 75%);
+  background: var(--phosphor-faint);
+}
+
+.armor-bar {
+  position: absolute;
+  background: var(--phosphor);
+  box-shadow: 0 0 5px var(--phosphor);
+}
+.a-front { top: 4px; left: 10px; right: 10px; height: 3px; }
+.a-back { bottom: 6px; left: 8px; right: 8px; height: 3px; }
+
+.shield-indicator {
+  position: absolute;
+  border: 3px solid var(--phosphor);
+  border-radius: 50%;
+  transition: opacity 0.2s ease, border-color 0.2s ease;
+}
+
+.s-front, .s-back { width: 100px; height: 100px; top: 5px; left: 5px; }
+.s-left, .s-right { width: 86px; height: 86px; top: 12px; left: 12px; }
+.s-front { border-left-color: transparent !important; border-right-color: transparent !important; border-bottom-color: transparent !important; }
+.s-back { border-left-color: transparent !important; border-right-color: transparent !important; border-top-color: transparent !important; }
+.s-left { border-top-color: transparent !important; border-bottom-color: transparent !important; border-right-color: transparent !important; }
+.s-right { border-top-color: transparent !important; border-bottom-color: transparent !important; border-left-color: transparent !important; }
+
+.flight-data-meters {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.meter-label {
+  font-size: 1.1rem;
+}
+
+.meter-value {
+  font-size: 1.2rem;
+  color: var(--amber);
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.55);
+  white-space: nowrap;
+}
+
+.meter-container {
+  height: 10px;
+  border: 1px solid var(--phosphor-dim);
+  overflow: hidden;
+  margin-top: 2px;
+}
+
+.meter-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--amber);
+  box-shadow: 0 0 6px rgba(255, 176, 0, 0.6);
+  transition: width 0.1s linear;
+}
+
+.meter-bar.active-speed {
+  background: var(--phosphor);
+  box-shadow: 0 0 6px var(--phosphor);
+}
+
+/* Radar VDU */
+.radar-vdu {
+  display: flex;
+  align-items: center;
+}
+
+.radar-canvas-container {
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+  width: 100%;
+}
+
+.radar-unit {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.radar-scope {
+  width: 100px;
+  height: 100px;
+  border: 1px solid var(--phosphor-dim);
+  border-radius: 50%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  position: relative;
+  overflow: hidden;
+  box-shadow: inset 0 0 12px rgba(92, 255, 122, 0.12);
+}
+
+.radar-scope::before,
+.radar-scope::after {
+  content: '';
+  position: absolute;
+  background: var(--phosphor-faint);
+}
+.radar-scope::before { top: 50%; left: 0; right: 0; height: 1px; }
+.radar-scope::after { left: 50%; top: 0; bottom: 0; width: 1px; }
+
+.radar-caption {
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--phosphor-dim);
+}
+
+/* ==========================================================================
+   Station terminal
+   ========================================================================== */
+
+.spaceport-bezel {
+  width: min(880px, 94vw);
+  padding: 10px 16px 18px;
+}
+
+.spaceport-terminal {
+  padding: 20px 26px 22px;
+  font-size: 1.3rem;
+}
+
+.spaceport-terminal > * {
+  position: relative;
+  z-index: 5; /* keep buttons above the glass overlays */
+}
+
+.terminal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 1px solid var(--phosphor-faint);
+  padding-bottom: 8px;
+  margin-bottom: 14px;
+}
+
+.terminal-header h2 {
+  font-weight: 400;
+  font-size: 2.2rem;
+  line-height: 1;
+  color: var(--amber);
+  text-shadow: 0 0 8px rgba(255, 176, 0, 0.6);
+}
+
+.terminal-credits span {
+  color: var(--amber);
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.55);
+}
+
+.terminal-tabs {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+/* Inverse video tabs */
+.tab-btn {
+  font-family: var(--font-screen);
+  font-size: 1.35rem;
+  line-height: 1;
+  padding: 5px 14px;
+  background: transparent;
+  color: var(--phosphor);
+  border: 1px solid var(--phosphor-dim);
+  text-shadow: inherit;
+  cursor: pointer;
+}
+
+.tab-btn:hover {
+  border-color: var(--phosphor);
+}
+
+.tab-btn.active {
+  background: var(--phosphor);
+  color: var(--screen);
+  text-shadow: none;
+  box-shadow: 0 0 10px rgba(92, 255, 122, 0.45);
+}
+
+#exit-terminal-btn {
+  margin-left: auto;
+  font-size: 0.8rem;
+  padding: 8px 16px;
+}
+
+.cargo-capacity-info {
+  margin-bottom: 8px;
+}
+
+.cargo-capacity-info span {
+  color: var(--amber);
+}
+
+.market-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 12px;
+}
+
+.market-table th,
+.market-table td {
+  border-bottom: 1px solid var(--phosphor-faint);
+  padding: 8px 10px;
+  text-align: left;
+  font-weight: 400;
+}
+
+.market-table th {
+  color: var(--phosphor-dim);
+  font-size: 1.1rem;
+}
+
+.market-table td:last-child {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.shop-action-btn {
+  font-family: var(--font-screen);
+  font-size: 1.2rem;
+  line-height: 1;
+  padding: 4px 12px;
+  margin-left: 6px;
+  background: transparent;
+  color: var(--phosphor);
+  border: 1px solid var(--phosphor);
+  text-shadow: inherit;
+  cursor: pointer;
+}
+
+.shop-action-btn:hover {
+  background: var(--phosphor);
+  color: var(--screen);
+  text-shadow: none;
+}
+
+.shop-action-btn.sell {
+  color: var(--amber);
+  border-color: var(--amber);
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.5);
+}
+
+.shop-action-btn.sell:hover {
+  background: var(--amber);
+  color: var(--screen);
+  text-shadow: none;
+}
+
+.shop-action-btn:active {
+  transform: translateY(1px);
+}
+
+.trading-tip {
+  font-size: 1.15rem;
+  color: var(--phosphor-dim);
+}
+
+.hangar-upgrades-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.upgrade-card {
+  border: 1px solid var(--phosphor-faint);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+}
+
+.upgrade-card h4 {
+  font-weight: 400;
+  font-size: 1.55rem;
+  line-height: 1;
+  color: var(--amber);
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.55);
+  margin-bottom: 4px;
+}
+
+.upgrade-card p {
+  font-size: 1.15rem;
+  line-height: 1.1;
+  color: var(--phosphor-dim);
+  margin-bottom: 8px;
+  flex-grow: 1;
+}
+
+.upgrade-info {
+  margin-bottom: 8px;
+}
+
+.upgrade-info span {
+  color: var(--amber);
+}
+
+.upgrade-buy-btn {
+  margin-left: 0;
+  width: 100%;
+  padding: 6px;
+  color: var(--amber);
+  border-color: var(--amber);
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.5);
+}
+
+.upgrade-buy-btn:hover {
+  background: var(--amber);
+}
+
+.upgrade-buy-btn:disabled {
+  cursor: default;
+  background: transparent;
+  color: var(--phosphor-dim);
+  border-color: var(--phosphor-faint);
+}
+
+/* ==========================================================================
+   Warp & game over
+   ========================================================================== */
+
+#warp-flash {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle, #ffffff 0%, #cfe6ff 55%, #0a1420 100%);
+  z-index: 99999;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.18s ease-in-out;
+}
+
+#warp-flash.active {
+  opacity: 1;
+}
+
+/* Nav computer */
+.overlay-nav {
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.25) 0%, rgba(0, 0, 0, 0.75) 100%);
+}
+
+.nav-bezel {
+  width: min(980px, 96vw);
+  padding: 10px 16px 18px;
+}
+
+.nav-terminal {
+  padding: 18px 22px 20px;
+  font-size: 1.25rem;
+}
+
+.nav-terminal > * {
+  position: relative;
+  z-index: 5; /* keep controls above the glass overlays */
+}
+
+.nav-keys {
+  font-size: 1.05rem;
+  color: var(--phosphor-dim);
+}
+
+.nav-body {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 18px;
+  align-items: start;
+}
+
+#nav-map-canvas {
+  width: min(460px, 46vw, 62vh);
+  aspect-ratio: 1;
+  border: 1px solid var(--phosphor-faint);
+  background: rgba(0, 0, 0, 0.25);
+  cursor: crosshair;
+}
+
+.nav-side {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.nav-list {
+  list-style: none;
+  max-height: min(340px, 42vh);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--phosphor-dim) transparent;
+}
+
+.nav-list li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  padding: 2px 8px;
+  line-height: 1.15;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+.nav-list li.station {
+  padding-left: 22px;
+  color: #6fe9ff;
+  text-shadow: 0 0 5px rgba(0, 240, 255, 0.45);
+}
+
+.nav-list li .nav-dist {
+  color: var(--phosphor-dim);
+}
+
+.nav-list li:hover {
+  border-color: var(--phosphor-dim);
+}
+
+/* Inverse video selection, same as the terminal tabs */
+.nav-list li.selected {
+  background: var(--amber);
+  color: var(--screen);
+  text-shadow: none;
+  box-shadow: 0 0 10px rgba(255, 176, 0, 0.4);
+}
+
+.nav-list li.selected .nav-dist {
+  color: var(--screen);
+}
+
+.nav-selected {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--phosphor-faint);
+}
+
+.nav-sel-name {
+  font-size: 1.7rem;
+  line-height: 1;
+  color: var(--amber);
+  text-shadow: 0 0 8px rgba(255, 176, 0, 0.6);
+}
+
+.nav-sel-info {
+  margin-top: 4px;
+  font-size: 1.15rem;
+  line-height: 1.15;
+  color: var(--phosphor-dim);
+  white-space: pre-line;
+}
+
+.nav-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.nav-actions .metal-btn {
+  font-size: 0.8rem;
+  padding: 8px 14px;
+}
+
+@media (max-width: 760px) {
+  .nav-body {
+    grid-template-columns: 1fr;
+  }
+
+  #nav-map-canvas {
+    width: min(100%, 46vh);
+    justify-self: center;
+  }
+}
+
+.death-bezel {
+  width: min(620px, 92vw);
+  padding: 10px 16px 18px;
+}
+
+.death-vdu {
+  padding: 36px 32px 30px;
+  text-align: center;
+  font-size: 1.4rem;
+  line-height: 1.15;
+}
+
+.death-vdu > * {
+  position: relative;
+  z-index: 5;
+}
+
+.logo-red {
+  font-size: clamp(2.8rem, 8vw, 4.6rem);
+  letter-spacing: 0.08em;
+  margin: 0 0 18px;
+  color: var(--alarm);
+  text-shadow: 0 0 10px rgba(255, 59, 47, 0.75), 0 0 30px rgba(255, 40, 20, 0.35);
+}
+
+#death-reason-text {
+  color: var(--amber);
+  text-shadow: 0 0 6px rgba(255, 176, 0, 0.55);
+}
+
+.penalty-text {
+  color: var(--phosphor-dim);
+  margin: 8px 0 28px;
+}
+
+/* ==========================================================================
+   Small screens & reduced motion
+   ========================================================================== */
+
+@media (max-width: 1000px) {
+  .cockpit-dashboard {
+    grid-template-columns: 1fr 1fr;
+    height: auto;
+    gap: 10px;
+    padding: 22px calc(100vw + 12px) 10px;
+  }
+
+  .dash-panel .vdu {
+    min-height: 110px;
+  }
+
+  .comm-bezel {
+    bottom: auto;
+    top: 64px;
+  }
+
+  .hangar-upgrades-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

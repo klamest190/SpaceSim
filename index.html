@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Solaris</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Saira+Stencil+One&family=VT323&display=swap" rel="stylesheet">
+  </head>
+  <body>
+    <!-- Canvas for WebGL Space Rendering -->
+    <canvas id="space-canvas"></canvas>
+
+    <!-- Start Screen: one VDU in a metal bezel, the solar system turning behind it -->
+    <div id="start-screen" class="overlay overlay-start">
+      <div class="bezel start-bezel">
+        <div class="plate-label">Bordcomputer</div>
+        <div class="vdu start-vdu">
+          <h1 class="logo">SOLARIS</h1>
+          <p class="tagline">Ein Pilot, ein Frachter, das ganze Sonnensystem.</p>
+          <div id="save-summary" class="save-summary hidden"></div>
+          <div class="start-actions">
+            <button id="launch-btn" class="metal-btn primary">Starten</button>
+            <button id="new-career-btn" class="metal-btn hidden">Neue Karriere</button>
+          </div>
+          <p class="start-note">Die Steuerung lernst du im Flug. H öffnet jederzeit das Handbuch.</p>
+        </div>
+        <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
+      </div>
+    </div>
+
+    <!-- Spaceport Terminal Overlay -->
+    <div id="spaceport-screen" class="overlay hidden">
+      <div class="bezel spaceport-bezel">
+        <div class="plate-label">Stationsterminal</div>
+        <div class="vdu spaceport-terminal">
+          <div class="terminal-header">
+            <h2 id="terminal-station-title">ERDE ORBITAL-STATION</h2>
+            <div class="terminal-credits">Konto <span id="terminal-credits-val">1000</span> Cr</div>
+          </div>
+
+          <div class="terminal-tabs">
+            <button id="tab-btn-market" class="tab-btn active">Marktplatz</button>
+            <button id="tab-btn-hangar" class="tab-btn">Werft</button>
+            <button id="exit-terminal-btn" class="metal-btn danger">Ablegen [G]</button>
+          </div>
+
+          <!-- Marketplace Tab Content -->
+          <div id="market-tab-content" class="tab-content">
+            <div class="cargo-capacity-info">
+              Frachtraum <span id="market-cargo-val">0 / 20</span> t
+            </div>
+            <table class="market-table">
+              <thead>
+                <tr>
+                  <th>Ware</th>
+                  <th>An Bord</th>
+                  <th>Kauf / Verkauf</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Eis</td>
+                  <td><span id="inv-ice">0</span> t</td>
+                  <td><span id="price-ice-buy">15</span> / <span id="price-ice-sell">10</span> Cr</td>
+                  <td>
+                    <button id="buy-ice-btn" class="shop-action-btn">Kaufen</button>
+                    <button id="sell-ice-btn" class="shop-action-btn sell">Verkaufen</button>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Eisenerz</td>
+                  <td><span id="inv-ore">0</span> t</td>
+                  <td><span id="price-ore-buy">25</span> / <span id="price-ore-sell">20</span> Cr</td>
+                  <td>
+                    <button id="buy-ore-btn" class="shop-action-btn">Kaufen</button>
+                    <button id="sell-ore-btn" class="shop-action-btn sell">Verkaufen</button>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Quantenchips</td>
+                  <td><span id="inv-tech">0</span> t</td>
+                  <td><span id="price-tech-buy">150</span> / <span id="price-tech-sell">120</span> Cr</td>
+                  <td>
+                    <button id="buy-tech-btn" class="shop-action-btn">Kaufen</button>
+                    <button id="sell-tech-btn" class="shop-action-btn sell">Verkaufen</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="trading-tip">Quantenchips sind auf der Erde günstig und auf dem Mars gefragt. Der Mars zahlt auch gut für Eis.</p>
+          </div>
+
+          <!-- Hangar Tab Content -->
+          <div id="hangar-tab-content" class="tab-content hidden">
+            <div class="hangar-upgrades-grid">
+              <div class="upgrade-card">
+                <h4>Ionentriebwerk</h4>
+                <p>Mehr Höchstgeschwindigkeit und Schub.</p>
+                <div class="upgrade-info">Stufe <span id="upgrade-lvl-engine">1</span> von 4</div>
+                <button id="upgrade-engine-btn" class="shop-action-btn upgrade-buy-btn">AUSBAUEN (250 Cr)</button>
+              </div>
+
+              <div class="upgrade-card">
+                <h4>Schildgenerator</h4>
+                <p>Mehr Schildkapazität, schnellere Aufladung.</p>
+                <div class="upgrade-info">Stufe <span id="upgrade-lvl-shield">1</span> von 4</div>
+                <button id="upgrade-shield-btn" class="shop-action-btn upgrade-buy-btn">AUSBAUEN (300 Cr)</button>
+              </div>
+
+              <div class="upgrade-card">
+                <h4>Tachyon-Kanone</h4>
+                <p>Weniger Energie pro Schuss, kürzere Nachladezeit.</p>
+                <div class="upgrade-info">Stufe <span id="upgrade-lvl-weapon">1</span> von 4</div>
+                <button id="upgrade-weapon-btn" class="shop-action-btn upgrade-buy-btn">AUSBAUEN (350 Cr)</button>
+              </div>
+
+              <div class="upgrade-card">
+                <h4>Frachtraum</h4>
+                <p>Mehr Tonnen für Handel und Bergbau.</p>
+                <div class="upgrade-info">Stufe <span id="upgrade-lvl-cargo">1</span> von 4</div>
+                <button id="upgrade-cargo-btn" class="shop-action-btn upgrade-buy-btn">AUSBAUEN (150 Cr)</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
+      </div>
+    </div>
+
+    <!-- Gameplay HUD / Privateer Cockpit -->
+    <div id="hud" class="hidden">
+
+      <!-- Helmet vignette: stays put while the cockpit swings -->
+      <div class="cockpit-visor"></div>
+
+      <!-- Everything bolted to the ship: shown in cockpit view, swings with head-look, gone in external view -->
+      <div id="cockpit-layer" class="cockpit-layer">
+
+      <!-- Canopy frame: overhead rail, two pillars, glass sheen -->
+      <div class="canopy-glass"></div>
+      <div class="canopy-rail"></div>
+      <div class="canopy-pillar left"></div>
+      <div class="canopy-pillar right"></div>
+
+      <!-- Overhead switch panel -->
+      <div class="hud-top-bar">
+        <button id="btn-fa" class="hud-btn active" title="Stabilisator [F]">STABILISATOR [F]</button>
+        <button id="btn-mute" class="hud-btn" title="Ton an/aus [M]">AUDIO [M]</button>
+        <button id="btn-help" class="hud-btn" title="Flughandbuch ein/aus [H]">HANDBUCH [H]: AUS</button>
+      </div>
+
+      <!-- Flight manual (H) -->
+      <div id="controls-hud-guide" class="controls-overlay-hud hidden">
+        <div class="overlay-header">Flughandbuch</div>
+        <ul class="overlay-keys-list">
+          <li><span>Maus</span> Schiff ausrichten</li>
+          <li><span>W / S</span> Schub / Rückwärts</li>
+          <li><span>A / D</span> Rollen</li>
+          <li><span>Q / E</span> Seitwärts</li>
+          <li><span>Linksklick</span> Laser</li>
+          <li><span>B halten</span> Traktorstrahl</li>
+          <li><span>T</span> Nächstes Ziel</li>
+          <li><span>R</span> Ziel im Fadenkreuz</li>
+          <li><span>X</span> Autopilot</li>
+          <li><span>N</span> Navkarte</li>
+          <li><span>J</span> Warpsprung zum Ziel</li>
+          <li><span>G</span> Andocken / Ablegen</li>
+          <li><span>F</span> Stabilisator</li>
+          <li><span>C</span> Cockpit / Außen</li>
+          <li><span>Mausrad</span> Rein- / Rauszoomen</li>
+          <li><span>Rechtsklick</span> Umschauen</li>
+          <li><span>M</span> Ton an/aus</li>
+        </ul>
+      </div>
+
+      <!-- Center Reticle / Gun Sight -->
+      <div class="hud-center-sight">
+        <div class="gun-sight">
+          <div class="sight-reticle"></div>
+          <div class="pitch-ticks">
+            <span class="tick-l">+10</span>
+            <span class="tick-l">--0--</span>
+            <span class="tick-l">-10</span>
+          </div>
+          <div id="laser-flash-l" class="laser-flash"></div>
+          <div id="laser-flash-r" class="laser-flash"></div>
+        </div>
+      </div>
+
+      <!-- Bottom console -->
+      <div class="cockpit-dashboard">
+
+        <!-- Target VDU -->
+        <div class="dash-panel">
+          <div class="plate-label">Zielerfassung</div>
+          <div class="vdu target-vdu">
+            <div class="target-screen-container">
+              <canvas id="target-wireframe-canvas" width="105" height="105"></canvas>
+            </div>
+            <div class="target-stats">
+              <div class="stat-row"><span id="target-name" class="amber-text">SONNE</span></div>
+              <div class="stat-row">DIST <span id="target-dist" class="amber-text">0 km</span></div>
+              <div class="stat-row">REL <span id="target-speed" class="amber-text">0 km/s</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Weapons, nav, pilot VDU -->
+        <div class="dash-panel">
+          <div class="plate-label">Waffen &amp; Navigation</div>
+          <div class="vdu systems-vdu">
+            <div class="vdu-row">
+              <span class="weapon-name">TACHYON-KANONE</span>
+              <span class="weapon-status"><span id="weapon-energy-val">100</span>%</span>
+            </div>
+            <div class="energy-gauge">
+              <div class="energy-bar" id="weapon-energy-bar" style="width: 100%;"></div>
+            </div>
+            <div class="autopilot-status" id="autopilot-status-indicator">AUTOPILOT: BEREIT</div>
+            <div class="pilot-stats">
+              <div class="vdu-row">KONTO <span><span id="hud-credits" class="amber-text">1000</span> Cr</span></div>
+              <div class="vdu-row">FRACHT <span><span id="hud-cargo">0 / 20</span> t</span></div>
+            </div>
+          </div>
+          <button id="btn-autopilot" class="metal-btn autopilot-btn" title="Autopilot [X]">Autopilot [X]</button>
+        </div>
+
+        <!-- Shields & speed VDU -->
+        <div class="dash-panel">
+          <div class="plate-label">Schilde &amp; Antrieb</div>
+          <div class="vdu flight-vdu">
+            <div class="shield-armor-display">
+              <div class="shield-indicator s-front" id="shield-f"></div>
+              <div class="shield-indicator s-back" id="shield-b"></div>
+              <div class="shield-indicator s-left" id="shield-l"></div>
+              <div class="shield-indicator s-right" id="shield-r"></div>
+              <div class="ship-wireframe-icon">
+                <div class="armor-bar a-front" id="armor-f"></div>
+                <div class="armor-bar a-back" id="armor-b"></div>
+              </div>
+            </div>
+
+            <div class="flight-data-meters">
+              <div class="meter-row">
+                <div class="vdu-row"><span class="meter-label">SCHUB</span><span class="meter-value" id="set-speed-val">0%</span></div>
+                <div class="meter-container">
+                  <div class="meter-bar" id="set-speed-bar" style="width: 0%;"></div>
+                </div>
+              </div>
+              <div class="meter-row">
+                <div class="vdu-row"><span class="meter-label">TEMPO</span><span class="meter-value" id="act-speed-val">0 km/s</span></div>
+                <div class="meter-container">
+                  <div class="meter-bar active-speed" id="act-speed-bar" style="width: 0%;"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Dual radar VDU -->
+        <div class="dash-panel">
+          <div class="plate-label">Radar</div>
+          <div class="vdu radar-vdu">
+            <div class="radar-canvas-container">
+              <div class="radar-unit">
+                <div class="radar-scope"><canvas id="radar-front-canvas" width="95" height="95"></canvas></div>
+                <span class="radar-caption">VORN</span>
+              </div>
+              <div class="radar-unit">
+                <div class="radar-scope"><canvas id="radar-rear-canvas" width="95" height="95"></canvas></div>
+                <span class="radar-caption">HINTEN</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+      <div class="cockpit-skirt"></div>
+
+      </div><!-- /cockpit-layer -->
+
+      <!-- External view: no cockpit, just a slim phosphor readout and a projected aim point -->
+      <div id="ext-aim" class="ext-aim hidden"></div>
+      <div id="external-hud" class="external-hud">
+        <div class="ext-row"><span>SCHUB</span><b id="ext-throttle">0%</b></div>
+        <div class="ext-row"><span>TEMPO</span><b id="ext-speed">0 km/s</b></div>
+        <div class="ext-row"><span>SCHILD</span><b id="ext-shield">100%</b></div>
+        <div class="ext-row"><span>ZIEL</span><b id="ext-target">---</b></div>
+        <div class="ext-row"><span>AUTOPILOT</span><b id="ext-autopilot">BEREIT</b></div>
+        <div class="ext-hint">Mausrad: ins Cockpit · N: Navkarte</div>
+      </div>
+
+      <div id="hud-dock-prompt" class="hud-alert-prompt hidden">
+        <span>[G] ANDOCKEN</span>
+      </div>
+      <div id="hud-gravity-alert" class="hud-gravity-warning hidden">
+        <span>SCHWEREFELD</span>
+      </div>
+
+      <!-- Comm VDU: radio messages from flight control -->
+      <div id="comm-vdu" class="bezel comm-bezel hidden" role="status" aria-live="polite">
+        <div class="plate-label">Funk</div>
+        <div class="vdu comm-screen">
+          <p id="comm-text"></p>
+        </div>
+      </div>
+
+      <!-- Screen-space Target Indicator box -->
+      <div id="target-reticle" class="target-reticle hidden">
+        <div class="reticle-box"></div>
+        <div class="reticle-label" id="target-reticle-label">ERDE</div>
+      </div>
+
+      <!-- Passive Destination Markers (Privateer Style) -->
+      <div id="passive-markers-container"></div>
+    </div>
+
+    <!-- Nav computer: pick a destination on the system map, then jump -->
+    <div id="nav-screen" class="overlay overlay-nav hidden">
+      <div class="bezel nav-bezel">
+        <div class="plate-label">Navigationscomputer</div>
+        <div class="vdu nav-terminal">
+          <div class="terminal-header">
+            <h2>NAVKARTE · SOL</h2>
+            <div class="nav-keys">↑↓ wählen · X Autopilot · Enter springen · N schließen</div>
+          </div>
+          <div class="nav-body">
+            <canvas id="nav-map-canvas" width="460" height="460"></canvas>
+            <div class="nav-side">
+              <ul id="nav-list" class="nav-list"></ul>
+              <div class="nav-selected">
+                <div id="nav-sel-name" class="nav-sel-name">---</div>
+                <div id="nav-sel-info" class="nav-sel-info"></div>
+              </div>
+              <div class="nav-actions">
+                <button id="nav-autopilot-btn" class="metal-btn primary">Autopilot [X]</button>
+                <button id="nav-warp-btn" class="metal-btn primary">Warpsprung [J]</button>
+                <button id="nav-close-btn" class="metal-btn">Schließen [N]</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
+      </div>
+    </div>
+
+    <!-- Fullscreen Warp Jump Flash overlay -->
+    <div id="warp-flash" class="hidden"></div>
+
+    <!-- Game Over Screen Overlay -->
+    <div id="game-over-screen" class="overlay hidden">
+      <div class="bezel death-bezel">
+        <div class="plate-label">Notsystem</div>
+        <div class="vdu death-vdu">
+          <h1 class="logo logo-red">SCHIFF ZERSTÖRT</h1>
+          <p id="death-reason-text">Dein Schiff ist mit einem Himmelskörper kollidiert und explodiert.</p>
+          <p class="penalty-text">Die Fracht ist verloren. Konto und Ausbauten bleiben erhalten.</p>
+          <button id="respawn-btn" class="metal-btn danger">Klon aktivieren</button>
+        </div>
+        <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
