@@ -5,7 +5,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { controls } from './controls';
 import { spaceAudio } from './audio';
-import { Spaceship, STATION_HOLD_STANDOFF } from './spaceship';
+import { Spaceship, STATION_HOLD_STANDOFF, planetHoldDistance } from './spaceship';
 import { SolarSystem } from './solarSystem';
 import { UI } from './ui';
 import { displayName } from './names';
@@ -14,6 +14,8 @@ import './style.css';
 
 const AUTOSAVE_INTERVAL = 15; // seconds
 const WARP_STATION_STANDOFF = STATION_HOLD_STANDOFF; // jump exit at the autopilot's waiting point, outside docking range
+const WARP_BRAKE_TIME = 1.0; // seconds from leaving the jump to standing still
+const WARP_CLEARANCE = 2.5;  // a planet jump's braking path keeps this far from other bodies' surfaces
 
 class Game {
   constructor() {
@@ -223,11 +225,12 @@ class Game {
       }
     });
 
-    // Warp Jump [J]: from the nav map to the selected destination, in flight to the locked target
+    // Warp Jump [J]: from the nav map to the selected destination; in flight to whatever sits in the
+    // crosshair, else to the locked target
     controls.onPress('j', () => {
       if (!this.simRunning || this.ship.isDocked || this.ship.isDestroyed) return;
       if (this.ui.navMap.isOpen) this.ui.navMap.warp();
-      else this.triggerWarpJump();
+      else this.triggerWarpJump(this.solarSystem.findTargetUnderCrosshair(this.ship));
     });
 
     // Nav computer [N]
@@ -273,9 +276,11 @@ class Game {
     spaceAudio.playAutopilotAlert(false); // descending warning beep
   }
 
-  triggerWarpJump() {
+  // `aimed`: the object in the crosshair, which becomes the target; without one the locked target is used
+  triggerWarpJump(aimed = null) {
     if (this.warpState) return; // Prevent double trigger during warp sequence
 
+    if (aimed) this.ship.targetObject = aimed;
     const target = this.ship.targetObject;
     if (!target) {
       spaceAudio.playAutopilotAlert(false); // negative feedback beep
@@ -376,8 +381,16 @@ class Game {
           // Asteroid: teleport close to mining distance with zero exit velocity
           offsetDist = 5.0;
           exitSpeed = 0;
+        } else if (this.solarSystem.planets.includes(target)) {
+          // Planet / Sun: brake in alongside it (it keeps orbiting) and end parked at the autopilot's
+          // distance, at rest relative to the planet; the approach side is moved if another body is in the way
+          exitSpeed = this.ship.maxSpeed * 1.8;
+          this.warpHoldDist = planetHoldDistance(target);
+          this.warpBrakeDist = (exitSpeed * WARP_BRAKE_TIME) / 2; // linear deceleration to zero
+          dir.copy(this.clearWarpApproach(target, dir, this.warpHoldDist + this.warpBrakeDist));
+          offsetDist = this.warpHoldDist + this.warpBrakeDist;
         } else {
-          // Planet / Sun: teleport with safety buffer for the deceleration flight phase
+          // Freighters: teleport with safety buffer for the deceleration flight phase
           const exitSpeedVal = this.ship.maxSpeed * 1.8;
           const targetSpeedVal = 0.0; // Decelerate to a complete stop
           const averageSpeed = (exitSpeedVal + targetSpeedVal) / 2;
@@ -386,6 +399,7 @@ class Game {
         }
 
         this.warpExitSpeed = exitSpeed;
+        this.warpDir = dir.clone();
 
         // Teleport
         this.ship.position.copy(targetPos).sub(dir.clone().multiplyScalar(offsetDist));
@@ -423,18 +437,26 @@ class Game {
       const targetPos = (target.group ? target.group.position : target.mesh.position).clone();
       const shipPos = this.ship.position;
 
+      const t = Math.min(1.0, this.warpTimer / WARP_BRAKE_TIME);
+      const isPlanet = this.solarSystem.planets.includes(target);
+
       // Ride along with the orbiting station while the jump spins down
       if (target.kind === 'station') {
         shipPos.copy(this.ship.stationDockPoint(target, WARP_STATION_STANDOFF, this.solarSystem));
       }
 
-      // 1. Decelerate ship from warp speed down to a complete stop
-      const t = Math.min(1.0, this.warpTimer / 1.0);
-      const targetSpeed = 0.0;
-      const currentSpeed = this.warpExitSpeed * (1.0 - t) + targetSpeed * t;
-      
-      const dir = targetPos.clone().sub(shipPos).normalize();
-      this.ship.velocity.copy(dir).multiplyScalar(currentSpeed);
+      if (isPlanet) {
+        // Brake relative to the moving planet: the remaining gap shrinks like a linear stop, measured
+        // from where the planet is now, so the ship ends exactly at its parking point beside it
+        const remaining = this.warpBrakeDist * (1.0 - t) * (1.0 - t);
+        shipPos.copy(targetPos).sub(this.warpDir.clone().multiplyScalar(this.warpHoldDist + remaining));
+        this.ship.velocity.set(0, 0, 0); // position is set directly; no extra drift from the physics step
+      } else {
+        // 1. Decelerate ship from warp speed down to a complete stop
+        const currentSpeed = this.warpExitSpeed * (1.0 - t);
+        const dir = targetPos.clone().sub(shipPos).normalize();
+        this.ship.velocity.copy(dir).multiplyScalar(currentSpeed);
+      }
 
       // 2. Contract camera FOV
       this.camera.fov = 125 - t * 60; // 125 to 65
@@ -446,7 +468,7 @@ class Game {
       }
 
       // Complete
-      if (this.warpTimer >= 1.0) {
+      if (this.warpTimer >= WARP_BRAKE_TIME) {
         this.warpState = null;
         this.ship.isWarping = false;
         this.camera.fov = 65;
@@ -464,8 +486,46 @@ class Game {
             this.ui.tutorial.say('Autopilot hält vor der Station. W gleitet heran, G dockt an, X übernimmt die Steuerung.', 8000);
           }
         }
+
+        // Planets keep orbiting too: park where the jump ended and move with the planet, out of its gravity loop
+        if (isPlanet) {
+          this.ship.holdTarget = target;
+          this.ship.planetHold = shipPos.clone().sub(targetPos);
+          this.ship.autopilotActive = true;
+          if (!this.ui.tutorial.active) {
+            this.ui.tutorial.say(`Geparkt bei ${displayName(target.name)}. W oder S übernimmt die Steuerung.`, 6000);
+          }
+        }
       }
     }
+  }
+
+  // Direction from which the jump approaches `target`: the requested one if the stretch from the exit point
+  // to the parking point is clear of other bodies, else the nearest clear one, turned around the target
+  clearWarpApproach(target, dir, exitDist) {
+    const center = target.group.position;
+    const obstacles = this.solarSystem.planets
+      .filter((p) => p !== target)
+      .map((p) => ({ center: p.group.position, safeRadius: p.mesh.scale.x + WARP_CLEARANCE }));
+    const holdDist = planetHoldDistance(target);
+    const isClear = (candidate) => {
+      for (let i = 0; i <= 4; i++) {
+        const point = center.clone().sub(candidate.clone().multiplyScalar(holdDist + ((exitDist - holdDist) * i) / 4));
+        if (obstacles.some((o) => point.distanceTo(o.center) < o.safeRadius)) return false;
+      }
+      return true;
+    };
+
+    if (isClear(dir)) return dir;
+    const up = new THREE.Vector3(0, 1, 0);
+    // Turn in growing steps, alternating sides, until the approach is free (the full circle is always tried)
+    for (let step = 1; step <= 12; step++) {
+      for (const side of [1, -1]) {
+        const candidate = dir.clone().applyAxisAngle(up, side * step * THREE.MathUtils.degToRad(15));
+        if (isClear(candidate)) return candidate;
+      }
+    }
+    return dir;
   }
 
   startSimulation() {

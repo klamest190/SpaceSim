@@ -23,7 +23,7 @@ const STEPS = [
   }
 ];
 
-const FINAL_TEXT = 'Willkommen im Geschäft. N öffnet die Navkarte: Ziel wählen, X fliegt per Autopilot hin, J springt per Warp. Mit dem Mausrad zoomst du aus dem Cockpit raus. Quantenchips und Eis bringen auf dem Mars gutes Geld.';
+const FINAL_TEXT = 'Willkommen im Geschäft. N öffnet die Navkarte: Ziel wählen, X fliegt per Autopilot hin, J springt per Warp, im Flug direkt zu dem, was du im Fadenkreuz hast. Mit dem Mausrad zoomst du aus dem Cockpit raus. Quantenchips und Eis bringen auf dem Mars gutes Geld.';
 const WELCOME_BACK_TEXT = 'Flugleitung Erde: Willkommen zurück. Die Erde-Station ist als Ziel erfasst.';
 
 export class Tutorial {
