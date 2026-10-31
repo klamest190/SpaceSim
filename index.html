@@ -162,11 +162,10 @@
           <li><span>Q / E</span> Seitwärts</li>
           <li><span>Linksklick</span> Laser</li>
           <li><span>B halten</span> Traktorstrahl</li>
+          <li><span>Anvisieren</span> Ziel erfassen</li>
           <li><span>T</span> Nächstes Ziel</li>
-          <li><span>R</span> Ziel im Fadenkreuz</li>
-          <li><span>X</span> Autopilot</li>
+          <li><span>X</span> Hinfliegen (Warpsprung, stoppt in sicherem Abstand)</li>
           <li><span>N</span> Navkarte</li>
-          <li><span>J</span> Warpsprung zu dem, was im Fadenkreuz ist (sonst zum erfassten Ziel)</li>
           <li><span>G</span> Andocken / Ablegen</li>
           <li><span>F</span> Stabilisator</li>
           <li><span>C</span> Cockpit / Außen</li>
@@ -225,7 +224,7 @@
               <div class="vdu-row">FRACHT <span><span id="hud-cargo">0 / 20</span> t</span></div>
             </div>
           </div>
-          <button id="btn-autopilot" class="metal-btn autopilot-btn" title="Autopilot [X]">Autopilot [X]</button>
+          <button id="btn-autopilot" class="metal-btn autopilot-btn" title="Hinfliegen [X]">Hinfliegen [X]</button>
         </div>
 
         <!-- Shields & speed VDU -->
@@ -293,6 +292,12 @@
         <div class="ext-hint">Mausrad: ins Cockpit · N: Navkarte</div>
       </div>
 
+      <!-- What X flies to: the target under the crosshair, or the one picked with T -->
+      <div id="hud-travel-prompt" class="hud-travel-prompt hidden">
+        <div id="hud-travel-name" class="travel-name">---</div>
+        <div class="travel-keys"><span>[X] Hinfliegen</span><span>[T] Nächstes Ziel</span></div>
+      </div>
+
       <div id="hud-dock-prompt" class="hud-alert-prompt hidden">
         <span>[G] ANDOCKEN</span>
       </div>
@@ -325,7 +330,7 @@
         <div class="vdu nav-terminal">
           <div class="terminal-header">
             <h2>NAVKARTE · SOL</h2>
-            <div class="nav-keys">↑↓ wählen · X Autopilot · Enter springen · N schließen</div>
+            <div class="nav-keys">↑↓ wählen · X oder Enter hinfliegen · N schließen</div>
           </div>
           <div class="nav-body">
             <canvas id="nav-map-canvas" width="460" height="460"></canvas>
@@ -336,8 +341,7 @@
                 <div id="nav-sel-info" class="nav-sel-info"></div>
               </div>
               <div class="nav-actions">
-                <button id="nav-autopilot-btn" class="metal-btn primary">Autopilot [X]</button>
-                <button id="nav-warp-btn" class="metal-btn primary">Warpsprung [J]</button>
+                <button id="nav-warp-btn" class="metal-btn primary">Hinfliegen [X]</button>
                 <button id="nav-close-btn" class="metal-btn">Schließen [N]</button>
               </div>
             </div>

@@ -5,7 +5,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { controls } from './controls';
 import { spaceAudio } from './audio';
-import { Spaceship, STATION_HOLD_STANDOFF, planetHoldDistance } from './spaceship';
+import { Spaceship, STATION_HOLD_STANDOFF, planetHoldDistance, arrivalRadius } from './spaceship';
 import { SolarSystem } from './solarSystem';
 import { UI } from './ui';
 import { displayName } from './names';
@@ -16,6 +16,16 @@ const AUTOSAVE_INTERVAL = 15; // seconds
 const WARP_STATION_STANDOFF = STATION_HOLD_STANDOFF; // jump exit at the autopilot's waiting point, outside docking range
 const WARP_BRAKE_TIME = 1.0; // seconds from leaving the jump to standing still
 const WARP_CLEARANCE = 2.5;  // a planet jump's braking path keeps this far from other bodies' surfaces
+const AIM_TURN = THREE.MathUtils.degToRad(3);   // the nose must turn this far before aiming picks a new target
+const AIM_CONE = THREE.MathUtils.degToRad(10);  // the crosshair's reach, as in findTargetUnderCrosshair
+const PLANET_PREFERENCE_RANGE = 100;           // farther out, aiming at a planet's station or freighter picks the planet
+
+// Shortest distance from `point` to the segment that starts at `start` and moves by `travel`
+function distanceToSegment(point, start, travel) {
+  const lengthSq = travel.lengthSq();
+  const t = lengthSq > 0 ? THREE.MathUtils.clamp(point.clone().sub(start).dot(travel) / lengthSq, 0, 1) : 0;
+  return start.clone().addScaledVector(travel, t).distanceTo(point);
+}
 
 class Game {
   constructor() {
@@ -159,7 +169,7 @@ class Game {
     controls.onPress('t', () => {
       if (!this.simRunning || this.ship.isDocked || this.ship.isDestroyed) return;
       const nextTarget = this.solarSystem.cycleTarget(this.ship.targetObject, this.ship);
-      this.ship.targetObject = nextTarget;
+      this.setTarget(nextTarget);
       spaceAudio.playBeep();
     });
 
@@ -168,7 +178,7 @@ class Game {
       if (!this.simRunning || this.ship.isDocked || this.ship.isDestroyed) return;
       const aimedTarget = this.solarSystem.findTargetUnderCrosshair(this.ship);
       if (aimedTarget) {
-        this.ship.targetObject = aimedTarget;
+        this.setTarget(aimedTarget);
         spaceAudio.playBeep();
       } else {
         spaceAudio.playAutopilotAlert(false); // Play negative feedback beep
@@ -207,12 +217,9 @@ class Game {
       this.ui.toggleHelpGuide();
     });
 
-    // Autopilot: in the nav computer to the selected destination, in flight to the locked target
-    controls.onPress('x', () => {
-      if (!this.simRunning || this.ship.isDocked || this.ship.isDestroyed) return;
-      if (this.ui.navMap.isOpen) this.ui.navMap.autopilot();
-      else this.ship.toggleAutopilot();
-    });
+    // Fly to the target [X] (J does the same)
+    controls.onPress('x', () => this.flyToTarget());
+    controls.onPress('j', () => this.flyToTarget());
 
     // Docking Trigger [G]
     controls.onPress('g', () => {
@@ -223,14 +230,6 @@ class Game {
       } else if (this.dockableStation) {
         this.dockShip();
       }
-    });
-
-    // Warp Jump [J]: from the nav map to the selected destination; in flight to whatever sits in the
-    // crosshair, else to the locked target
-    controls.onPress('j', () => {
-      if (!this.simRunning || this.ship.isDocked || this.ship.isDestroyed) return;
-      if (this.ui.navMap.isOpen) this.ui.navMap.warp();
-      else this.triggerWarpJump(this.solarSystem.findTargetUnderCrosshair(this.ship));
     });
 
     // Nav computer [N]
@@ -276,14 +275,53 @@ class Game {
     spaceAudio.playAutopilotAlert(false); // descending warning beep
   }
 
-  // `aimed`: the object in the crosshair, which becomes the target; without one the locked target is used
-  triggerWarpJump(aimed = null) {
+  // One key for travel: a warp jump to the target shown under the crosshair, stopping at a safe distance.
+  // Held at a station, it lets go instead; in the nav computer, it flies to the selected destination.
+  flyToTarget() {
+    if (!this.simRunning || this.ship.isDocked || this.ship.isDestroyed) return;
+    if (this.ui.navMap.isOpen) this.ui.navMap.warp();
+    else if (this.ship.autopilotActive) this.ship.toggleAutopilot();
+    else this.triggerWarpJump();
+  }
+
+  // Aiming at an object makes it the target, but only when the pilot turns the nose to it: objects drifting
+  // through a still crosshair never steal the target, a target still in sight keeps it, and T's pick holds
+  // until the pilot looks elsewhere. From afar a planet wins over its own stations and freighters.
+  updateAimedTarget() {
+    const ship = this.ship;
+    if (ship.isDocked || ship.isWarping || ship.isDestroyed || ship.autopilotActive || this.ui.navMap.isOpen) return;
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(ship.quaternion);
+    if (!this.aimReference) this.aimReference = forward.clone();
+    if (forward.angleTo(this.aimReference) < AIM_TURN) return;
+
+    let aimed = this.solarSystem.findTargetUnderCrosshair(ship);
+    const parent = aimed && aimed.planetIndex !== undefined ? this.solarSystem.planets[aimed.planetIndex] : null;
+    if (parent && this.isInSight(parent, forward) && parent.group.position.distanceTo(ship.position) > PLANET_PREFERENCE_RANGE) {
+      aimed = parent;
+    }
+    if (!aimed || aimed === ship.targetObject) return;
+    if (ship.targetObject && this.isInSight(ship.targetObject, forward)) return;
+    this.setTarget(aimed);
+  }
+
+  // A deliberate target choice (aiming, T, R): later auto-aiming waits until the nose turns away from here
+  setTarget(target) {
+    this.ship.targetObject = target;
+    this.aimReference = new THREE.Vector3(0, 0, -1).applyQuaternion(this.ship.quaternion);
+  }
+
+  isInSight(obj, forward) {
+    const pos = obj.group ? obj.group.position : obj.mesh.position;
+    return forward.angleTo(pos.clone().sub(this.ship.position)) < AIM_CONE;
+  }
+
+  triggerWarpJump() {
     if (this.warpState) return; // Prevent double trigger during warp sequence
 
-    if (aimed) this.ship.targetObject = aimed;
     const target = this.ship.targetObject;
-    if (!target) {
-      spaceAudio.playAutopilotAlert(false); // negative feedback beep
+    const targetPos = target && (target.group ? target.group.position : target.mesh.position);
+    if (!target || targetPos.distanceTo(this.ship.position) < arrivalRadius(target)) {
+      spaceAudio.playAutopilotAlert(false); // nothing to fly to, or already there
       return;
     }
 
@@ -348,9 +386,16 @@ class Game {
       const targetPos = (target.group ? target.group.position : target.mesh.position).clone();
       const shipPos = this.ship.position;
 
-      // 1. Move ship extremely fast towards target
+      // 1. Move ship extremely fast towards target, but on short hops never into or past it, and never
+      //    through a planet or the Sun (e.g. a station behind its planet): then it waits behind the flash
       const dir = targetPos.clone().sub(shipPos).normalize();
-      this.ship.velocity.copy(dir).multiplyScalar(2200);
+      const gap = targetPos.distanceTo(shipPos) - arrivalRadius(target);
+      const speed = Math.min(2200, Math.max(0, gap) * 4);
+      const travel = dir.clone().multiplyScalar(speed * delta);
+      const blocked = this.solarSystem.planets.some(
+        (p) => distanceToSegment(p.group.position, shipPos, travel) < p.mesh.scale.x + WARP_CLEARANCE
+      );
+      this.ship.velocity.copy(dir).multiplyScalar(blocked ? 0 : speed);
 
       // 2. visually flare engine glows
       this.ship.throttle = 1.0;
@@ -382,8 +427,8 @@ class Game {
           offsetDist = 5.0;
           exitSpeed = 0;
         } else if (this.solarSystem.planets.includes(target)) {
-          // Planet / Sun: brake in alongside it (it keeps orbiting) and end parked at the autopilot's
-          // distance, at rest relative to the planet; the approach side is moved if another body is in the way
+          // Planet / Sun: brake in alongside it (it keeps orbiting) and stop at a safe distance, at rest
+          // relative to the planet; the approach side is moved if another body is in the way
           exitSpeed = this.ship.maxSpeed * 1.8;
           this.warpHoldDist = planetHoldDistance(target);
           this.warpBrakeDist = (exitSpeed * WARP_BRAKE_TIME) / 2; // linear deceleration to zero
@@ -487,13 +532,11 @@ class Game {
           }
         }
 
-        // Planets keep orbiting too: park where the jump ended and move with the planet, out of its gravity loop
+        // Planets: hand the stick back at rest relative to the planet, which keeps orbiting; nothing holds the ship
         if (isPlanet) {
-          this.ship.holdTarget = target;
-          this.ship.planetHold = shipPos.clone().sub(targetPos);
-          this.ship.autopilotActive = true;
+          if (target.velocity) this.ship.velocity.copy(target.velocity);
           if (!this.ui.tutorial.active) {
-            this.ui.tutorial.say(`Geparkt bei ${displayName(target.name)}. W oder S übernimmt die Steuerung.`, 6000);
+            this.ui.tutorial.say(`${displayName(target.name)} erreicht. Du hast die Steuerung.`, 5000);
           }
         }
       }
@@ -531,6 +574,8 @@ class Game {
   startSimulation() {
     // Earth kept orbiting behind the start screen: re-place the ship now, or Earth may have swept into it
     this.placeShipAtEarth();
+    // The preselected station stays the target until the pilot turns the nose somewhere else
+    this.aimReference = new THREE.Vector3(0, 0, -1).applyQuaternion(this.ship.quaternion);
     this.simRunning = true;
     const canvas = document.getElementById('space-canvas');
     controls.start(canvas);
@@ -572,6 +617,9 @@ class Game {
       if (this.warpState) {
         this.updateWarpJump(delta);
       }
+
+      // 1.6. Whatever the pilot aims at becomes the target
+      this.updateAimedTarget();
 
       // 2. Update ship physics (slingshots calculations internally)
       this.ship.update(delta, this.solarSystem);

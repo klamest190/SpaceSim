@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { displayName } from './names';
 import { Tutorial } from './tutorial';
 import { NavMap } from './navMap';
+import { arrivalRadius } from './spaceship';
 
 // Game units -> readable distance (arcade scale: 1 unit = 100.000 km)
 function formatDist(gameDistance) {
@@ -36,7 +37,9 @@ export class UI {
     this.helpGuide = document.getElementById('controls-hud-guide');
     this.helpGuideActive = false;
     
-    // Autopilot and weapons
+    // Travel, autopilot and weapons
+    this.travelPrompt = document.getElementById('hud-travel-prompt');
+    this.travelName = document.getElementById('hud-travel-name');
     this.btnAutopilot = document.getElementById('btn-autopilot');
     this.autopilotStatus = document.getElementById('autopilot-status-indicator');
     this.weaponEnergyBar = document.getElementById('weapon-energy-bar');
@@ -199,9 +202,9 @@ export class UI {
       this.game.toggleAudio();
     });
 
-    // Autopilot
+    // Fly to the target, same as X
     this.btnAutopilot.addEventListener('click', () => {
-      this.game.ship.toggleAutopilot();
+      this.game.flyToTarget();
     });
 
     // Help Manual
@@ -583,6 +586,9 @@ export class UI {
     // 9. Check if docking is possible with orbital stations
     this.checkDockingPrompts(ship, solarSystem);
 
+    // 9.5. What X flies to, under the crosshair; hidden where X does something else or there is nowhere to go
+    this.updateTravelPrompt(ship, target);
+
     // 10. Update gravity warnings alert
     if (ship.gravityFieldActive) {
       this.gravityAlert.classList.remove('hidden');
@@ -650,6 +656,17 @@ export class UI {
     const armorPct = 1.0; // static for now
     this.armorF.style.width = `${armorPct * 100}%`;
     this.armorB.style.width = `${armorPct * 100}%`;
+  }
+
+  updateTravelPrompt(ship, target) {
+    let show = !!target && !ship.isDocked && !ship.isDestroyed && !ship.autopilotActive &&
+      !this.game.warpState && !this.game.dockableStation && !this.navMap.isOpen;
+    if (show) {
+      const targetPos = target.group ? target.group.position : target.mesh.position;
+      show = targetPos.distanceTo(ship.position) >= arrivalRadius(target);
+    }
+    this.travelPrompt.classList.toggle('hidden', !show);
+    if (show) this.travelName.textContent = displayName(target.name).toUpperCase();
   }
 
   checkDockingPrompts(ship, solarSystem) {

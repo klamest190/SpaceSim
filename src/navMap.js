@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { controls } from './controls';
 import { spaceAudio } from './audio';
 import { displayName } from './names';
-import { planetHoldDistance } from './spaceship';
+import { arrivalRadius } from './spaceship';
 
 const PICK_RADIUS = 18; // canvas px
 const SUN_RING = 30;   // map radius of the innermost orbit
@@ -25,7 +25,6 @@ export class NavMap {
     this.selName = document.getElementById('nav-sel-name');
     this.selInfo = document.getElementById('nav-sel-info');
 
-    document.getElementById('nav-autopilot-btn').addEventListener('click', () => this.autopilot());
     document.getElementById('nav-warp-btn').addEventListener('click', () => this.warp());
     document.getElementById('nav-close-btn').addEventListener('click', () => this.close());
     this.canvas.addEventListener('click', e => this.pickOnMap(e));
@@ -106,15 +105,10 @@ export class NavMap {
     this.select(this.selectedIndex + step);
   }
 
+  // Fly to the selected destination [X / Enter]: a warp jump that stops at a safe distance
   warp() {
     const entry = this.departTo();
     if (entry) this.game.triggerWarpJump();
-  }
-
-  // Cruise there under autopilot: it parks in front of the destination and never docks on its own
-  autopilot() {
-    const entry = this.departTo();
-    if (entry) this.game.ship.engageAutopilot();
   }
 
   // Lock the selected destination and close the map; null if there is nowhere to go
@@ -122,19 +116,13 @@ export class NavMap {
     if (!this.isOpen) return null;
     const entry = this.entries[this.selectedIndex];
     const dist = this.objectPos(entry.object).distanceTo(this.game.ship.position);
-    if (dist < this.arrivalRadius(entry)) {
+    if (dist < arrivalRadius(entry.object)) {
       spaceAudio.playAutopilotAlert(false); // already there
       return null;
     }
     this.game.ship.targetObject = entry.object;
     this.close();
     return entry;
-  }
-
-  // Closer than this neither autopilot nor jump would get you anywhere (covers the autopilot's parking points)
-  arrivalRadius(entry) {
-    if (entry.kind === 'station') return 5;
-    return Math.max(entry.object.mesh.scale.x + 12, planetHoldDistance(entry.object) + 2);
   }
 
   objectPos(obj) {
@@ -201,7 +189,7 @@ export class NavMap {
     const lines = [
       entry.kind === 'station' ? 'Raumstation · Handel und Werft' : entry.object.name === 'Sun' ? 'Stern · Vorsicht, Schwerefeld' : 'Planet',
       `Entfernung ${this.formatDist(dist)}`,
-      dist < this.arrivalRadius(entry) ? 'Bereits vor Ort' : 'Autopilot und Sprungtriebwerk bereit'
+      dist < arrivalRadius(entry.object) ? 'Bereits vor Ort' : 'Sprungtriebwerk bereit'
     ];
     this.selInfo.textContent = lines.join('\n');
 

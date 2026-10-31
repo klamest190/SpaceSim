@@ -14,16 +14,16 @@ const STEPS = [
     done: ship => ship.throttle > 0.25
   },
   {
-    text: 'Die Erde-Station ist als Ziel erfasst. Drücke X, der Autopilot bringt dich hin.',
-    done: (ship, ctx) => ship.autopilotActive || !!ctx.dockable
+    text: 'Unter dem Fadenkreuz steht dein Ziel. Was du anvisierst, wird erfasst, T schaltet weiter. Steht dort die Erde-Station, drücke X.',
+    done: (ship, ctx) => (ship.autopilotActive && ship.targetObject?.kind === 'station') || !!ctx.dockable
   },
   {
-    text: 'Der Autopilot hält vor der Station. Halte W, um heranzugleiten. Sobald die Andock-Anzeige erscheint, drücke G.',
+    text: 'Du hältst vor der Station. Halte W, um heranzugleiten. Sobald die Andock-Anzeige erscheint, drücke G.',
     done: ship => ship.isDocked
   }
 ];
 
-const FINAL_TEXT = 'Willkommen im Geschäft. N öffnet die Navkarte: Ziel wählen, X fliegt per Autopilot hin, J springt per Warp, im Flug direkt zu dem, was du im Fadenkreuz hast. Mit dem Mausrad zoomst du aus dem Cockpit raus. Quantenchips und Eis bringen auf dem Mars gutes Geld.';
+const FINAL_TEXT = 'Willkommen im Geschäft. Anvisieren und X bringt dich überall hin, T schaltet durch die Ziele, N öffnet die Navkarte. Mit dem Mausrad zoomst du aus dem Cockpit raus. Quantenchips und Eis bringen auf dem Mars gutes Geld.';
 const WELCOME_BACK_TEXT = 'Flugleitung Erde: Willkommen zurück. Die Erde-Station ist als Ziel erfasst.';
 
 export class Tutorial {

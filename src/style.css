@@ -637,6 +637,37 @@ button:focus-visible {
   z-index: 15;
 }
 
+/* What X flies to: steady (not blinking like the dock alert), one line below it so both can coexist */
+.hud-travel-prompt {
+  position: absolute;
+  top: calc(40% + 124px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  text-align: center;
+  background: rgba(3, 8, 5, 0.8);
+  border: 1px solid var(--phosphor-dim);
+  color: var(--phosphor);
+  padding: 4px 14px 6px;
+  text-shadow: 0 0 6px rgba(92, 255, 122, 0.6);
+  z-index: 15;
+  pointer-events: none;
+}
+
+.travel-name {
+  font-size: 1.45rem;
+  line-height: 1.1;
+}
+
+.travel-keys {
+  display: flex;
+  gap: 18px;
+  justify-content: center;
+  font-size: 1.15rem;
+  color: var(--amber);
+  text-shadow: 0 0 5px rgba(255, 176, 0, 0.5);
+}
+
 .hud-gravity-warning {
   position: absolute;
   top: calc(40% - 126px);

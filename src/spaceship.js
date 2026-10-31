@@ -24,6 +24,13 @@ export function planetHoldDistance(p) {
   return p.mesh.scale.x * 1.8 + 2.0;
 }
 
+// Closer than this to an object, flying there would get you nowhere: you have already arrived
+export function arrivalRadius(obj) {
+  if (obj.kind === 'station') return 5;
+  const radius = obj.mesh ? obj.mesh.scale.x : 1;
+  return obj.group ? Math.max(radius + 12, planetHoldDistance(obj) + 2) : radius + 12;
+}
+
 export class Spaceship {
   constructor(scene) {
     this.scene = scene;
@@ -498,11 +505,6 @@ export class Spaceship {
       this.throttle = 0;
     }
     spaceAudio.playAutopilotAlert(this.autopilotActive);
-  }
-
-  // Nav computer: fly to the current target; already flying keeps going (the new target resets any hold)
-  engageAutopilot() {
-    if (!this.autopilotActive) this.toggleAutopilot();
   }
 
   isHolding() {
