@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { controls } from './controls';
 import { spaceAudio } from './audio';
+import { atmosphereTop } from './solarSystem';
 
 const DOCK_STANDOFF = 1.5;    // closest the pilot can glide in to a station, away from its planet
 export const STATION_HOLD_STANDOFF = 4.0; // the autopilot waits here: outside docking range (2.5), the pilot glides in
@@ -13,16 +14,12 @@ const HOLD_RELEASE_MOUSE = 10; // pixels of mouse movement in one frame that cou
 
 // Radius of a body's gravity field (also the range in which it is the stabilizer's reference frame)
 export function gravityRadius(p) {
-  if (p.name === 'Sun') return 75;
-  if (p.name === 'Jupiter') return 45;
-  if (p.name === 'Saturn') return 35;
-  if (p.name === 'Uranus' || p.name === 'Neptune') return 25;
-  return 15;
+  return p.radius * (p.name === 'Sun' ? 1.8 : 4.0);
 }
 
-// The autopilot parks this far from a planet's centre: close enough to fill the view, clear of the surface
+// The autopilot parks this far from a planet's centre: the planet fills much of the view, the atmosphere is a short flight away
 export function planetHoldDistance(p) {
-  return p.mesh.scale.x * 1.8 + 2.0;
+  return p.radius * 1.7 + 2.0;
 }
 
 // Closer than this to an object, flying there would get you nowhere: you have already arrived
@@ -114,6 +111,7 @@ export class Spaceship {
 
     // Gravity physics status
     this.gravityFieldActive = false;
+    this.atmosphereContact = 0; // seconds left on the warning after touching an atmosphere floor
     this.gravityPullDir = new THREE.Vector3();
     
     // Apply stats from current upgrades
@@ -673,7 +671,7 @@ export class Spaceship {
     // Obstacles: every other planet, and a target station itself, so the approach swings around it to the waiting point
     const obstacles = solarSystem.planets
       .filter(p => p !== this.targetObject)
-      .map(p => ({ center: p.group.position, safeRadius: p.mesh.scale.x + 1.8 }));
+      .map(p => ({ center: p.group.position, safeRadius: atmosphereTop(p) + 1.8 }));
     if (this.targetObject && this.targetObject.kind === 'station') {
       obstacles.push({ center: this.targetObject.mesh.position, safeRadius: STATION_CLEARANCE });
     }
@@ -699,7 +697,8 @@ export class Spaceship {
     if (shipForward.dot(targetDir) < 0.9999) {
       const qRotate = new THREE.Quaternion().setFromUnitVectors(shipForward, targetDir);
       const alignSpeed = 3.0;
-      this.quaternion.slerp(qRotate.premultiply(this.quaternion), delta * alignSpeed);
+      // qRotate turns in world space, so it applies after the current orientation
+      this.quaternion.slerp(qRotate.multiply(this.quaternion), delta * alignSpeed);
       this.mesh.quaternion.copy(this.quaternion);
     }
   }
@@ -749,23 +748,18 @@ export class Spaceship {
     // Autopilot and warp computers steer around gravity loops automatically; departure thrusters outpull it
     if (this.autopilotActive || this.isWarping || this.departureTime > 0) return;
 
-    const G = 0.55; // gravitational constant
-
     solarSystem.planets.forEach(p => {
       const pPos = p.group.position.clone();
       const dist = this.position.distanceTo(pPos);
 
-      if (dist < gravityRadius(p) && dist > 1.5) {
+      if (dist < gravityRadius(p) && dist > p.radius * 0.5) {
         this.gravityFieldActive = true;
         
         const pullDir = pPos.sub(this.position).normalize();
         this.gravityPullDir.copy(pullDir);
 
-        // Mass factor is proportional to relative radius
-        const mass = p.data.realRadius * 0.008;
-        
-        // F = G*M / d²
-        const forceMag = (G * mass) / (dist * dist);
+        // Surface gravity, falling off with the square of the distance
+        const forceMag = p.data.gravity * (p.radius / dist) ** 2;
         const gravityForce = pullDir.multiplyScalar(forceMag * delta);
         
         // Accumulate velocity pulling towards the planet!

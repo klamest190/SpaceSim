@@ -685,6 +685,26 @@ button:focus-visible {
   z-index: 15;
 }
 
+/* Altimeter under the crosshair, steady phosphor: only warnings blink */
+.hud-altitude {
+  position: absolute;
+  top: calc(40% + 46px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  color: var(--phosphor-dim);
+  font-size: 1.15rem;
+  letter-spacing: 0.06em;
+  text-shadow: 0 0 6px rgba(92, 255, 122, 0.45);
+  pointer-events: none;
+  z-index: 14;
+}
+
+.hud-altitude b {
+  color: var(--phosphor);
+  font-weight: normal;
+}
+
 @keyframes lampBlink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }

@@ -6,7 +6,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { controls } from './controls';
 import { spaceAudio } from './audio';
 import { Spaceship, STATION_HOLD_STANDOFF, planetHoldDistance, arrivalRadius } from './spaceship';
-import { SolarSystem } from './solarSystem';
+import { SolarSystem, atmosphereTop, flightFloor } from './solarSystem';
 import { UI } from './ui';
 import { displayName } from './names';
 import { loadGame, saveGame, clearGame } from './save';
@@ -18,7 +18,9 @@ const WARP_BRAKE_TIME = 1.0; // seconds from leaving the jump to standing still
 const WARP_CLEARANCE = 2.5;  // a planet jump's braking path keeps this far from other bodies' surfaces
 const AIM_TURN = THREE.MathUtils.degToRad(3);   // the nose must turn this far before aiming picks a new target
 const AIM_CONE = THREE.MathUtils.degToRad(10);  // the crosshair's reach, as in findTargetUnderCrosshair
-const PLANET_PREFERENCE_RANGE = 100;           // farther out, aiming at a planet's station or freighter picks the planet
+const PLANET_PREFERENCE_RADII = 3;             // farther out (in planet radii), aiming at a planet's station or freighter picks the planet
+const HEAT_SPEED = 25;                         // hitting the atmosphere floor faster than this (units/s) scorches the shield
+const ZERO = new THREE.Vector3();
 
 // Shortest distance from `point` to the segment that starts at `start` and moves by `travel`
 function distanceToSegment(point, start, travel) {
@@ -72,7 +74,7 @@ class Game {
     this.scene.add(this.tractorBeamLine);
     
     // Instantiate controllers
-    this.solarSystem = new SolarSystem(this.scene);
+    this.solarSystem = new SolarSystem(this.scene, this.renderer);
     this.ship = new Spaceship(this.scene);
     
     // Restore the pilot career, then spawn near Earth with its station locked as first destination
@@ -94,17 +96,20 @@ class Game {
   initWebGL() {
     this.scene = new THREE.Scene();
     
+    // Logarithmic depth: the cockpit at 0.05 units and Neptune 45.000 units away share one depth buffer,
+    // and cloud decks a fraction of a unit over the ground never flicker
     this.camera = new THREE.PerspectiveCamera(
-      65, 
-      window.innerWidth / window.innerHeight, 
-      0.01, 
-      150000 // Extended far clipping plane for true 1:1 planetary scale
+      65,
+      window.innerWidth / window.innerHeight,
+      0.05,
+      150000
     );
     
     const canvas = document.getElementById('space-canvas');
     this.renderer = new THREE.WebGLRenderer({
       canvas: canvas,
       antialias: true,
+      logarithmicDepthBuffer: true,
       powerPreference: "high-performance"
     });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
@@ -153,15 +158,30 @@ class Game {
   placeShipAtEarth() {
     const earth = this.solarSystem.planets[3];
     const earthStation = this.solarSystem.stations.find(st => st.planetIndex === 3);
-    if (earth) {
-      const earthRadius = earth.mesh.scale.x;
-      const spawnOffset = new THREE.Vector3(0, 0.1, earthRadius * 1.5 + 2.0); // Safely outside Earth's collision boundary
-      this.ship.position.copy(earth.currentPos).add(spawnOffset);
-      this.ship.mesh.position.copy(this.ship.position);
-      this.ship.targetObject = earthStation || earth;
-    } else {
+    if (!earth) {
       this.ship.targetObject = this.solarSystem.planets[0];
+      return;
     }
+    // Start over Earth's day side, turned off the line to the Sun so the terminator shows,
+    // with the station just ahead, low over the clouds
+    const up = new THREE.Vector3(0, 1, 0);
+    const out = earth.currentPos.clone().negate().setY(0).normalize()
+      .applyAxisAngle(up, THREE.MathUtils.degToRad(55))
+      .addScaledVector(up, 0.12)
+      .normalize();
+    this.ship.position.copy(earth.currentPos).addScaledVector(out, earth.radius * 1.55);
+    if (earthStation) {
+      earthStation.orbitAngle = Math.atan2(out.z, out.x) + 0.3;
+      this.solarSystem.update(0);
+    }
+    // Nose between the station and Earth: the station ahead, the planet filling the lower view
+    const lookAt = earthStation ? earthStation.mesh.position.clone().lerp(earth.currentPos, 0.45) : earth.currentPos;
+    const look = new THREE.Matrix4().lookAt(this.ship.position, lookAt, up);
+    this.ship.quaternion.setFromRotationMatrix(look);
+    this.ship.mesh.position.copy(this.ship.position);
+    this.ship.mesh.quaternion.copy(this.ship.quaternion);
+    this.ship.velocity.copy(earth.velocity || ZERO);
+    this.ship.targetObject = earthStation || earth;
   }
 
   setupControlBinds() {
@@ -302,7 +322,7 @@ class Game {
 
     let aimed = this.solarSystem.findTargetUnderCrosshair(ship);
     const parent = aimed && aimed.planetIndex !== undefined ? this.solarSystem.planets[aimed.planetIndex] : null;
-    if (parent && this.isInSight(parent, forward) && parent.group.position.distanceTo(ship.position) > PLANET_PREFERENCE_RANGE) {
+    if (parent && this.isInSight(parent, forward) && parent.group.position.distanceTo(ship.position) > parent.radius * PLANET_PREFERENCE_RADII) {
       aimed = parent;
     }
     if (!aimed || aimed === ship.targetObject) return;
@@ -399,7 +419,7 @@ class Game {
       const speed = Math.min(2200, Math.max(0, gap) * 4);
       const travel = dir.clone().multiplyScalar(speed * delta);
       const blocked = this.solarSystem.planets.some(
-        (p) => distanceToSegment(p.group.position, shipPos, travel) < p.mesh.scale.x + WARP_CLEARANCE
+        (p) => distanceToSegment(p.group.position, shipPos, travel) < atmosphereTop(p) + WARP_CLEARANCE
       );
       this.ship.velocity.copy(dir).multiplyScalar(blocked ? 0 : speed);
 
@@ -555,7 +575,7 @@ class Game {
     const center = target.group.position;
     const obstacles = this.solarSystem.planets
       .filter((p) => p !== target)
-      .map((p) => ({ center: p.group.position, safeRadius: p.mesh.scale.x + WARP_CLEARANCE }));
+      .map((p) => ({ center: p.group.position, safeRadius: atmosphereTop(p) + WARP_CLEARANCE }));
     const holdDist = planetHoldDistance(target);
     const isClear = (candidate) => {
       for (let i = 0; i <= 4; i++) {
@@ -632,6 +652,7 @@ class Game {
       this.ship.updateCamera(this.camera, delta);
       
       // 3. Collision checks: Lasers hitting Asteroids & Ship crashes
+      if (this.ship.atmosphereContact > 0) this.ship.atmosphereContact -= delta;
       if (!this.ship.isDocked) {
         this.checkCollisions();
       }
@@ -655,13 +676,19 @@ class Game {
 
       controls.clearDeltas();
     } else {
-      // Background menu rotation: slow orbit well outside the sun so it reads as a glowing disc
-      const time = Date.now() * 0.00006;
-      this.camera.position.set(Math.cos(time) * 210, 38, Math.sin(time) * 210);
-      this.camera.lookAt(new THREE.Vector3(0, 0, 0));
+      // Behind the start screen: a slow pass over Earth, swinging between the day side and the terminator
+      const earth = this.solarSystem.planets[3];
+      const up = new THREE.Vector3(0, 1, 0);
+      const swing = Math.sin(Date.now() * 0.00005);
+      const dir = earth.group.position.clone().negate().setY(0).normalize().applyAxisAngle(up, 1.05 + swing * 0.35);
+      this.camera.up.copy(up);
+      this.camera.position.copy(earth.group.position).addScaledVector(dir, earth.radius * 2.3).addScaledVector(up, earth.radius * 0.45);
+      const side = new THREE.Vector3().crossVectors(up, dir).normalize();
+      this.camera.lookAt(earth.group.position.clone().addScaledVector(side, earth.radius * 0.55));
     }
 
-    // 6. WebGL frame render (bloom + ACES tone mapping)
+    // 6. WebGL frame render (bloom + ACES tone mapping); planet shaders get the final camera first
+    this.solarSystem.updateView(this.camera);
     this.composer.render(delta);
   }
 
@@ -780,18 +807,45 @@ class Game {
       }
     }
 
-    // C. Check spaceship crashing into planets/Sun
+    // C. Planets: the ship flies down into the upper atmosphere (over airless ground, down to a low pass)
+    //    and no deeper; it slides along that floor. Only the Sun destroys it.
     if (!ship.isWarping && !ship.isDestroyed) {
       for (let i = 0; i < solarSystem.planets.length; i++) {
         const p = solarSystem.planets[i];
-        const dist = ship.position.distanceTo(p.group.position);
-        const radius = p.mesh.scale.x;
+        const offset = ship.position.clone().sub(p.group.position);
+        const dist = offset.length();
 
-        // Bounding check: if distance is less than planet scale radius + small ship buffer
-        if (dist < radius + 0.45) {
-          this.triggerShipExplosion(p.name);
-          break;
+        if (p.name === 'Sun') {
+          if (dist < p.radius * 1.02 + 0.45) {
+            this.triggerShipExplosion(p.name);
+            break;
+          }
+          continue;
         }
+
+        const floor = flightFloor(p);
+        if (dist >= floor) continue;
+        const up = offset.divideScalar(dist || 1);
+        ship.position.copy(p.group.position).addScaledVector(up, floor);
+        ship.mesh.position.copy(ship.position);
+
+        // Cancel the descent relative to the planet, keep the sideways motion, bounce off gently
+        const planetVelocity = p.velocity || ZERO;
+        const rel = ship.velocity.clone().sub(planetVelocity);
+        const sink = -rel.dot(up);
+        if (sink > 0) {
+          if (ship.atmosphereContact <= 0) {
+            spaceAudio.playAutopilotAlert(false);
+            if (sink > HEAT_SPEED) {
+              ship.shield = Math.max(0, ship.shield - (sink - HEAT_SPEED) * 0.5);
+              ship.rotationSpeed.pitch += (Math.random() - 0.5) * 0.6;
+            }
+          }
+          rel.addScaledVector(up, sink * 1.25);
+          ship.velocity.copy(rel).add(planetVelocity);
+        }
+        ship.atmosphereContact = 0.6; // seconds the warning stays up
+        break;
       }
     }
   }
@@ -863,8 +917,6 @@ class Game {
     // 4. Position player safely near the newly repositioned Earth
     this.placeShipAtEarth();
 
-    this.ship.velocity.set(0, 0, 0);
-    this.ship.quaternion.setFromEuler(new THREE.Euler(0, Math.PI, 0));
     this.ship.throttle = 0.0;
     
     this.ship.isDestroyed = false;

@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { displayName } from './names';
 import { Tutorial } from './tutorial';
 import { NavMap } from './navMap';
-import { arrivalRadius } from './spaceship';
+import { arrivalRadius, gravityRadius } from './spaceship';
 
 const PROMPT_KEYS = {
   travel: ['[X] Hinfliegen', '[T] Nächstes Ziel'],
@@ -70,6 +70,9 @@ export class UI {
     // Prompts and alerts
     this.dockPrompt = document.getElementById('hud-dock-prompt');
     this.gravityAlert = document.getElementById('hud-gravity-alert');
+    this.gravityAlertText = this.gravityAlert.querySelector('span');
+    this.altimeter = document.getElementById('hud-altitude');
+    this.altimeterValue = document.getElementById('hud-altitude-value');
     
     // Campaign HUD Stats
     this.hudCredits = document.getElementById('hud-credits');
@@ -597,12 +600,11 @@ export class UI {
     // 9.5. What X flies to, under the crosshair; hidden where X does something else or there is nowhere to go
     this.updateTravelPrompt(ship, target);
 
-    // 10. Update gravity warnings alert
-    if (ship.gravityFieldActive) {
-      this.gravityAlert.classList.remove('hidden');
-    } else {
-      this.gravityAlert.classList.add('hidden');
-    }
+    // 10. Gravity and atmosphere warnings, and the altimeter near a planet
+    const touchingAtmosphere = ship.atmosphereContact > 0;
+    this.gravityAlertText.textContent = touchingAtmosphere ? 'MINDESTHÖHE' : 'SCHWEREFELD';
+    this.gravityAlert.classList.toggle('hidden', !(ship.gravityFieldActive || touchingAtmosphere));
+    this.updateAltimeter(ship, solarSystem);
 
     // 11. External view readout and aim point
     if (external) {
@@ -630,6 +632,25 @@ export class UI {
     const x = -Math.tan(yaw) * focal;
     const y = -Math.tan(pitch) * focal;
     this.cockpitLayer.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
+  }
+
+  // Height over the nearest planet's surface, in that planet's own kilometres (Earth's floor is about 100 km)
+  updateAltimeter(ship, solarSystem) {
+    let nearest = null;
+    let nearestAltitude = Infinity;
+    solarSystem.planets.forEach(p => {
+      const dist = p.group.position.distanceTo(ship.position);
+      const altitude = dist - p.radius;
+      if (dist < gravityRadius(p) && altitude < nearestAltitude) {
+        nearest = p;
+        nearestAltitude = altitude;
+      }
+    });
+    const show = !!nearest && !ship.isDocked && !ship.isDestroyed;
+    this.altimeter.classList.toggle('hidden', !show);
+    if (!show) return;
+    const km = Math.max(0, nearestAltitude) * (nearest.data.realRadius / nearest.radius);
+    this.altimeterValue.textContent = `${Math.round(km).toLocaleString('de-DE')} km über ${displayName(nearest.name)}`;
   }
 
   // Projected point far ahead of the nose, so you can still aim from outside
