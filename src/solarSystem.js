@@ -187,6 +187,14 @@ export const PLANET_DATA = [
 ];
 
 // Top of a body's atmosphere (its surface if it has none)
+const SUN_INTENSITY = 2.6;
+
+// Average colour of each planet's sunlit face, for the light it reflects onto nearby ships
+const FILL_TINT = {
+  Mercury: 0x9a948c, Venus: 0xe0c89a, Earth: 0x8fb0e0, Mars: 0xc07850,
+  Jupiter: 0xd8c0a0, Saturn: 0xe0d0a8, Uranus: 0xa8e0e8, Neptune: 0x6f8fe8,
+};
+
 export function atmosphereTop(p) {
   return p.body.atmosphereTop;
 }
@@ -233,10 +241,16 @@ export class SolarSystem {
 
     // Sunlight for ships, stations and rocks (the planets light themselves in their shaders): parallel rays
     // from the Sun towards wherever the ship is, equally strong at Mercury and Neptune
-    this.sunLight = new THREE.DirectionalLight(0xfff4e6, 2.6);
+    this.sunLight = new THREE.DirectionalLight(0xfff4e6, SUN_INTENSITY);
+    this.sunVisibility = 1; // 0 in a planet's shadow, soft through the penumbra
     this.sunLight.position.set(0, 0, 0);
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
+
+    // Light thrown back by the nearest planet's day side onto the ship's shadowed side
+    this.fillLight = new THREE.DirectionalLight(0xffffff, 0);
+    this.scene.add(this.fillLight);
+    this.scene.add(this.fillLight.target);
 
     PLANET_DATA.forEach((data, index) => {
       const body = new PlanetBody(this.renderer, data, index * 17.0);
@@ -893,6 +907,61 @@ export class SolarSystem {
     }
   }
 
+  // How much of the Sun's disc the ship sees: a planet in front of it covers part or all of it.
+  // Discs compared by apparent size, so small Mercury in front of the Sun only dims, a near Earth eclipses it.
+  updateSunVisibility(shipPos) {
+    const toSun = shipPos.clone().negate();
+    const sunDist = toSun.length();
+    toSun.divideScalar(sunDist);
+    const sunAngle = Math.asin(Math.min(1, this.planets[0].radius / sunDist));
+    let vis = 1;
+    const rel = new THREE.Vector3();
+    this.planets.forEach((p, i) => {
+      if (i === 0 || !p.radius) return;
+      rel.copy(p.group.position).sub(shipPos);
+      const along = rel.dot(toSun);
+      if (along <= 0 || along > sunDist) return;
+      const dist = rel.length();
+      // a thick atmosphere softens the edge of the shadow a little
+      const planetAngle = Math.asin(Math.min(1, (p.radius * (p.data.atmosphere ? 1.02 : 1)) / dist));
+      const apart = Math.acos(THREE.MathUtils.clamp(along / dist, -1, 1));
+      let seen;
+      if (apart >= sunAngle + planetAngle) seen = 1;
+      else if (planetAngle >= sunAngle && apart <= planetAngle - sunAngle) seen = 0;
+      else {
+        const covered = Math.min(1, (planetAngle / sunAngle) ** 2); // most it can hide
+        const inside = Math.abs(planetAngle - sunAngle);
+        const t = THREE.MathUtils.smoothstep(apart, inside, sunAngle + planetAngle);
+        seen = 1 - covered * (1 - t);
+      }
+      vis = Math.min(vis, seen);
+    });
+    this.sunVisibility = vis;
+    this.sunLight.intensity = SUN_INTENSITY * vis;
+  }
+
+  updateFillLight(shipPos) {
+    let best = null;
+    let bestStrength = 0;
+    this.planets.forEach((p, i) => {
+      if (i === 0 || !p.radius) return;
+      const d = p.group.position.distanceTo(shipPos);
+      const strength = Math.min(1, (p.radius / Math.max(d, p.radius)) ** 2);
+      if (strength > bestStrength) { best = p; bestStrength = strength; }
+    });
+    if (!best || bestStrength < 0.02) {
+      this.fillLight.intensity = 0;
+      return;
+    }
+    const up = shipPos.clone().sub(best.group.position).normalize();
+    const toSun = best.group.position.clone().negate().normalize();
+    const dayside = THREE.MathUtils.clamp(0.5 + 0.5 * up.dot(toSun), 0, 1);
+    this.fillLight.color.set(FILL_TINT[best.name] || 0xb0b8c8);
+    this.fillLight.intensity = 0.9 * bestStrength * dayside;
+    this.fillLight.position.copy(best.group.position).addScaledVector(up, best.radius);
+    this.fillLight.target.position.copy(shipPos);
+  }
+
   update(delta, shipPos = null) {
     const scale = this.getScaleParameters();
     if (delta > 0) this.time += delta;
@@ -901,6 +970,10 @@ export class SolarSystem {
       this.skyGroup.position.copy(shipPos);
     }
     if (shipPos) this.sunLight.target.position.copy(shipPos);
+    if (shipPos) {
+      this.updateSunVisibility(shipPos);
+      this.updateFillLight(shipPos);
+    }
 
     // 1. Planets: orbit, spin, and the orbital velocity the ship's stabilizer and station departures fly relative to
     this.planets.forEach((p, index) => {

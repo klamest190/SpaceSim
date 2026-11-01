@@ -141,9 +141,9 @@
 
       <!-- Canopy frame: overhead rail, two pillars, glass sheen -->
       <div class="canopy-glass"></div>
-      <div class="canopy-rail"></div>
-      <div class="canopy-pillar left"></div>
-      <div class="canopy-pillar right"></div>
+      <div id="pillar-left" class="canopy-pillar left"><span class="pillar-light shade"></span><span class="pillar-light"></span><span class="pillar-light edge"></span><span class="pillar-light fill"></span></div>
+      <div id="pillar-right" class="canopy-pillar right"><span class="pillar-light shade"></span><span class="pillar-light"></span><span class="pillar-light edge"></span><span class="pillar-light fill"></span></div>
+      <div id="canopy-rail" class="canopy-rail"><span class="rail-shade"></span></div>
 
       <!-- Overhead switch panel -->
       <div class="hud-top-bar">
@@ -189,91 +189,97 @@
         </div>
       </div>
 
-      <!-- Bottom console -->
+      <!-- Bottom console: target VDU left, raised centre binnacle (lamps, gauges, radar), ship VDU right -->
       <div class="cockpit-dashboard">
+        <div class="console-shell" aria-hidden="true"></div>
+        <div class="console-light" aria-hidden="true"><span class="cl-shade"></span><span class="cl-sun"></span><span class="cl-fill"></span></div>
 
-        <!-- Target VDU -->
-        <div class="dash-panel">
+        <!-- Target VDU: rotating wireframe of what is locked, and its numbers -->
+        <div class="dash-panel dash-side dash-left">
           <div class="plate-label">Zielerfassung</div>
           <div class="vdu target-vdu">
             <div class="target-screen-container">
-              <canvas id="target-wireframe-canvas" width="105" height="105"></canvas>
+              <canvas id="target-wireframe-canvas" width="150" height="150"></canvas>
             </div>
             <div class="target-stats">
-              <div class="stat-row"><span id="target-name" class="amber-text">SONNE</span></div>
-              <div class="stat-row">DIST <span id="target-dist" class="amber-text">0 km</span></div>
-              <div class="stat-row">REL <span id="target-speed" class="amber-text">0 km/s</span></div>
+              <div id="target-name" class="target-name amber-text">SONNE</div>
+              <div class="stat-row"><span>DIST</span><span id="target-dist" class="amber-text">0 km</span></div>
+              <div class="stat-row"><span>REL</span><span id="target-speed" class="amber-text">0 km/s</span></div>
+              <div id="target-kind" class="target-kind">---</div>
             </div>
           </div>
+          <span class="screw tl"></span><span class="screw tr"></span>
         </div>
 
-        <!-- Weapons, nav, pilot VDU -->
-        <div class="dash-panel">
-          <div class="plate-label">Waffen &amp; Navigation</div>
-          <div class="vdu systems-vdu">
-            <div class="vdu-row">
-              <span class="weapon-name">TACHYON-KANONE</span>
-              <span class="weapon-status"><span id="weapon-energy-val">100</span>%</span>
+        <!-- Centre binnacle -->
+        <div class="dash-panel binnacle">
+          <div class="annunciator" id="annunciator">
+            <span class="lamp" data-lamp="stabil">STABIL</span>
+            <span class="lamp" data-lamp="auto">AUTOPILOT</span>
+            <span class="lamp" data-lamp="halten">HALTEN</span>
+            <span class="lamp" data-lamp="andock">ANDOCKEN</span>
+            <span class="lamp" data-lamp="schwere">SCHWERE</span>
+            <span class="lamp" data-lamp="hoehe">HÖHE</span>
+            <span class="lamp" data-lamp="schild">SCHILD</span>
+            <span class="lamp" data-lamp="fracht">FRACHT</span>
+          </div>
+          <div class="binnacle-row">
+            <div class="column-gauge" title="Schub">
+              <div class="column-track"><div class="column-fill" id="set-speed-bar"></div></div>
+              <span class="column-label">SCHUB</span>
+              <span class="column-value" id="set-speed-val">0%</span>
             </div>
-            <div class="energy-gauge">
-              <div class="energy-bar" id="weapon-energy-bar" style="width: 100%;"></div>
+            <div class="vdu radar-vdu">
+              <div class="radar-unit">
+                <div class="radar-scope"><canvas id="radar-front-canvas" width="128" height="128"></canvas></div>
+                <span class="radar-caption">VORN</span>
+              </div>
+              <div class="radar-unit">
+                <div class="radar-scope"><canvas id="radar-rear-canvas" width="128" height="128"></canvas></div>
+                <span class="radar-caption">HINTEN</span>
+              </div>
+              <div class="autopilot-status" id="autopilot-status-indicator">AUTOPILOT: BEREIT</div>
             </div>
-            <div class="autopilot-status" id="autopilot-status-indicator">AUTOPILOT: BEREIT</div>
-            <div class="pilot-stats">
-              <div class="vdu-row">KONTO <span><span id="hud-credits" class="amber-text">1000</span> Cr</span></div>
-              <div class="vdu-row">FRACHT <span><span id="hud-cargo">0 / 20</span> t</span></div>
+            <div class="column-gauge" title="Tempo">
+              <div class="column-track"><div class="column-fill speed" id="act-speed-bar"></div></div>
+              <span class="column-label">TEMPO</span>
+              <span class="column-value" id="act-speed-val">0 km/s</span>
             </div>
           </div>
           <button id="btn-autopilot" class="metal-btn autopilot-btn" title="Hinfliegen [X]">Hinfliegen [X]</button>
         </div>
 
-        <!-- Shields & speed VDU -->
-        <div class="dash-panel">
-          <div class="plate-label">Schilde &amp; Antrieb</div>
-          <div class="vdu flight-vdu">
-            <div class="shield-armor-display">
-              <div class="shield-indicator s-front" id="shield-f"></div>
-              <div class="shield-indicator s-back" id="shield-b"></div>
-              <div class="shield-indicator s-left" id="shield-l"></div>
-              <div class="shield-indicator s-right" id="shield-r"></div>
-              <div class="ship-wireframe-icon">
-                <div class="armor-bar a-front" id="armor-f"></div>
-                <div class="armor-bar a-back" id="armor-b"></div>
-              </div>
-            </div>
-
-            <div class="flight-data-meters">
-              <div class="meter-row">
-                <div class="vdu-row"><span class="meter-label">SCHUB</span><span class="meter-value" id="set-speed-val">0%</span></div>
-                <div class="meter-container">
-                  <div class="meter-bar" id="set-speed-bar" style="width: 0%;"></div>
-                </div>
-              </div>
-              <div class="meter-row">
-                <div class="vdu-row"><span class="meter-label">TEMPO</span><span class="meter-value" id="act-speed-val">0 km/s</span></div>
-                <div class="meter-container">
-                  <div class="meter-bar active-speed" id="act-speed-bar" style="width: 0%;"></div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Dual radar VDU -->
-        <div class="dash-panel">
-          <div class="plate-label">Radar</div>
-          <div class="vdu radar-vdu">
-            <div class="radar-canvas-container">
-              <div class="radar-unit">
-                <div class="radar-scope"><canvas id="radar-front-canvas" width="95" height="95"></canvas></div>
-                <span class="radar-caption">VORN</span>
-              </div>
-              <div class="radar-unit">
-                <div class="radar-scope"><canvas id="radar-rear-canvas" width="95" height="95"></canvas></div>
-                <span class="radar-caption">HINTEN</span>
-              </div>
+        <!-- Ship VDU: plan view with shield arcs, gun energy, account and hold -->
+        <div class="dash-panel dash-side dash-right">
+          <div class="plate-label">Schiff &amp; Waffen</div>
+          <div class="vdu ship-vdu">
+            <svg class="ship-plan" viewBox="0 0 100 120" aria-hidden="true">
+              <path class="shield-arc" id="shield-f" d="M 17.5 20.4 A 46 56 0 0 1 82.5 20.4" />
+              <path class="shield-arc" id="shield-r" d="M 86.5 24.2 A 46 56 0 0 1 86.5 95.8" />
+              <path class="shield-arc" id="shield-b" d="M 82.5 99.6 A 46 56 0 0 1 17.5 99.6" />
+              <path class="shield-arc" id="shield-l" d="M 13.5 95.8 A 46 56 0 0 1 13.5 24.2" />
+              <g class="plan-hull">
+                <polygon points="50,11.4 56,17.4 59.6,25 62.6,36.4 64.4,48.6 65,63.8 64.1,80.9 61.4,93.4 59,98.8 41,98.8 38.6,93.4 35.9,80.9 35,63.8 35.6,48.6 37.4,36.4 40.4,25 44,17.4" />
+                <polygon points="63.5,50.5 83.6,64.6 83.6,77.1 63.5,83.6" />
+                <polygon points="36.5,50.5 16.4,64.6 16.4,77.1 36.5,83.6" />
+                <rect x="65.3" y="44" width="11.4" height="63.9" />
+                <rect x="23.3" y="44" width="11.4" height="63.9" />
+                <rect x="84" y="42.9" width="4" height="33" />
+                <rect x="12" y="42.9" width="4" height="33" />
+                <line x1="86" y1="42.9" x2="86" y2="30.4" />
+                <line x1="14" y1="42.9" x2="14" y2="30.4" />
+                <polygon class="plan-canopy" points="45.8,22.8 54.2,22.8 58.4,41 57.2,50.9 42.8,50.9 41.6,41" />
+              </g>
+            </svg>
+            <div class="ship-readouts">
+              <div class="vdu-row"><span>SCHILD</span><span id="shield-val" class="amber-text">100%</span></div>
+              <div class="vdu-row"><span>LASER</span><span class="amber-text"><span id="weapon-energy-val">100</span>%</span></div>
+              <div class="energy-gauge"><div class="energy-bar" id="weapon-energy-bar" style="width: 100%;"></div></div>
+              <div class="vdu-row ledger">KONTO <span><span id="hud-credits" class="amber-text">1000</span> Cr</span></div>
+              <div class="vdu-row">FRACHT <span><span id="hud-cargo">0 / 20</span> t</span></div>
             </div>
           </div>
+          <span class="screw tl"></span><span class="screw tr"></span>
         </div>
 
       </div>

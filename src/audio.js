@@ -1,447 +1,554 @@
-// Audio manager using Web Audio API for procedural space sound effects and ambient drone
+// Procedural sound for the cockpit, all synthesized with the Web Audio API (no sample files).
+// Everything runs through one bus: a shared convolution reverb gives sounds a cabin and a tail,
+// a compressor glues layers together and keeps stacked effects from clipping.
+// Each effect is built from layers the way film sound is: a transient for the attack, a tonal body,
+// filtered noise for air and texture, and a sub layer for weight.
+
+const MASTER_VOLUME = 0.5;
+
 class SpaceAudio {
   constructor() {
     this.ctx = null;
     this.muted = true;
-    
-    // Nodes
-    this.masterGain = null;
-    
-    // Engine sound nodes (Futuristic Ion Core)
-    this.engineOsc1 = null; // Low clean sine
-    this.engineOsc2 = null; // Harmonic clean sine
-    this.turbineOsc = null;  // High sci-fi whine (triangle)
-    this.engineFilter = null;
-    this.engineGain = null;
-    
-    // Thruster plasma noise nodes (white noise with sweeping bandpass)
-    this.thrusterNoise = null;
-    this.thrusterFilter = null;
-    this.thrusterGain = null;
-    
-    // Warp/Autopilot hyper-cruise sound nodes
-    this.warpOsc = null;
-    this.warpGain = null;
-    
-    // Tractor beam sound nodes
-    this.tractorOsc = null;
-    this.tractorFilter = null;
-    this.tractorGain = null;
-    
-    // Ambient drone nodes
-    this.droneOsc1 = null;
-    this.droneOsc2 = null;
-    this.droneGain = null;
-    
     this.initialized = false;
+    this.noise = {};
+    this.laserSide = 1;
+    this.tractorOn = false;
   }
 
   init() {
     if (this.initialized) return;
-
     try {
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       this.ctx = new AudioContextClass();
-      
-      this.masterGain = this.ctx.createGain();
-      this.masterGain.gain.setValueAtTime(this.muted ? 0 : 0.35, this.ctx.currentTime);
-      this.masterGain.connect(this.ctx.destination);
-      
+      const ctx = this.ctx;
+
+      this.masterGain = ctx.createGain();
+      this.masterGain.gain.value = this.muted ? 0 : MASTER_VOLUME;
+
+      this.compressor = ctx.createDynamicsCompressor();
+      this.compressor.threshold.value = -20;
+      this.compressor.knee.value = 14;
+      this.compressor.ratio.value = 4;
+      this.compressor.attack.value = 0.004;
+      this.compressor.release.value = 0.25;
+
+      this.bus = ctx.createGain();
+      this.bus.connect(this.compressor);
+
+      this.reverb = ctx.createConvolver();
+      this.reverb.buffer = this.makeImpulse(2.6, 2.4);
+      this.reverbReturn = ctx.createGain();
+      this.reverbReturn.gain.value = 0.55;
+      this.reverb.connect(this.reverbReturn);
+      this.reverbReturn.connect(this.compressor);
+
+      this.compressor.connect(this.masterGain);
+      this.masterGain.connect(ctx.destination);
+
       this.setupEngine();
-      this.setupThrusters();
       this.setupWarp();
-      this.setupAmbientDrone();
+      this.setupAmbience();
       this.setupTractor();
-      
+
       this.initialized = true;
-      console.log("Futuristic Space Audio Engine initialized.");
     } catch (e) {
-      console.warn("Web Audio API not supported or blocked: ", e);
+      console.warn('Web Audio API not supported or blocked: ', e);
     }
   }
 
+  // ------------------------------------------------------------------------------------------
+  // Building blocks
+  // ------------------------------------------------------------------------------------------
+
+  get now() {
+    return this.ctx.currentTime;
+  }
+
+  // Stereo impulse response: dense early reflections, then a darkening exponential tail
+  makeImpulse(seconds, decay) {
+    const rate = this.ctx.sampleRate;
+    const length = Math.floor(rate * seconds);
+    const buffer = this.ctx.createBuffer(2, length, rate);
+    for (let ch = 0; ch < 2; ch++) {
+      const data = buffer.getChannelData(ch);
+      let lp = 0;
+      for (let i = 0; i < length; i++) {
+        const t = i / length;
+        // the tail loses its highs as it decays
+        const cutoff = 0.55 - 0.45 * t;
+        lp += cutoff * ((Math.random() * 2 - 1) - lp);
+        const early = i < rate * 0.06 && Math.random() < 0.02 ? (Math.random() * 2 - 1) * 0.8 : 0;
+        data[i] = (lp + early) * Math.pow(1 - t, decay);
+      }
+    }
+    return buffer;
+  }
+
+  // Cached noise: white, pink (softer, natural) or brown (rumble)
+  noiseBuffer(kind) {
+    if (this.noise[kind]) return this.noise[kind];
+    const rate = this.ctx.sampleRate;
+    const length = rate * 3;
+    const buffer = this.ctx.createBuffer(2, length, rate);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = buffer.getChannelData(ch);
+      let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0, last = 0;
+      for (let i = 0; i < length; i++) {
+        const white = Math.random() * 2 - 1;
+        if (kind === 'pink') {
+          b0 = 0.99886 * b0 + white * 0.0555179;
+          b1 = 0.99332 * b1 + white * 0.0750759;
+          b2 = 0.969 * b2 + white * 0.153852;
+          b3 = 0.8665 * b3 + white * 0.3104856;
+          b4 = 0.55 * b4 + white * 0.5329522;
+          b5 = -0.7616 * b5 - white * 0.016898;
+          d[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.11;
+          b6 = white * 0.115926;
+        } else if (kind === 'brown') {
+          last = (last + 0.02 * white) / 1.02;
+          d[i] = last * 3.5;
+        } else {
+          d[i] = white;
+        }
+      }
+    }
+    this.noise[kind] = buffer;
+    return buffer;
+  }
+
+  noiseSource(kind, loop = false) {
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBuffer(kind);
+    src.loop = loop;
+    if (loop) src.loopStart = Math.random();
+    return src;
+  }
+
+  osc(type, freq) {
+    const o = this.ctx.createOscillator();
+    o.type = type;
+    o.frequency.value = freq;
+    return o;
+  }
+
+  filter(type, freq, q = 0.7) {
+    const f = this.ctx.createBiquadFilter();
+    f.type = type;
+    f.frequency.value = freq;
+    f.Q.value = q;
+    return f;
+  }
+
+  gain(value = 0) {
+    const g = this.ctx.createGain();
+    g.gain.value = value;
+    return g;
+  }
+
+  // Route a voice to the bus, panned, with some of it sent to the reverb
+  out(node, { pan = 0, reverb = 0.15 } = {}) {
+    let tail = node;
+    if (pan !== 0 && this.ctx.createStereoPanner) {
+      const p = this.ctx.createStereoPanner();
+      p.pan.value = pan;
+      node.connect(p);
+      tail = p;
+    }
+    tail.connect(this.bus);
+    if (reverb > 0) {
+      const send = this.gain(reverb);
+      tail.connect(send);
+      send.connect(this.reverb);
+    }
+  }
+
+  // Attack / decay envelope on a gain param, exponential so it sounds natural
+  envelope(param, t, attack, peak, decay) {
+    param.cancelScheduledValues(t);
+    param.setValueAtTime(0.0001, t);
+    param.exponentialRampToValueAtTime(peak, t + attack);
+    param.exponentialRampToValueAtTime(0.0001, t + attack + decay);
+  }
+
+  // Slow modulation source: an LFO scaled by depth, connected onto a param
+  lfo(rate, depth, param, type = 'sine') {
+    const o = this.osc(type, rate);
+    const g = this.gain(depth);
+    o.connect(g);
+    g.connect(param);
+    o.start();
+    return { osc: o, depth: g };
+  }
+
+  ramp(param, value, time = 0.12) {
+    param.setTargetAtTime(value, this.now, time / 3);
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // Continuous layers
+  // ------------------------------------------------------------------------------------------
+
+  // Ion drive: sub thump, a detuned reactor core, a turbine whine with a little wobble,
+  // brown-noise rumble from the hull and pink-noise exhaust that opens up with thrust
   setupEngine() {
-    // Clean, futuristic Ion Reactor engine: sines + triangle turbine, low-pass filtered
-    this.engineOsc1 = this.ctx.createOscillator();
-    this.engineOsc2 = this.ctx.createOscillator();
-    this.turbineOsc = this.ctx.createOscillator();
-    this.engineFilter = this.ctx.createBiquadFilter();
-    this.engineGain = this.ctx.createGain();
+    const e = (this.engine = {});
+    e.bus = this.gain(1);
+    this.out(e.bus, { reverb: 0.06 });
 
-    // Warm harmonics instead of buzzing sawtooths
-    this.engineOsc1.type = 'sine';
-    this.engineOsc1.frequency.setValueAtTime(110, this.ctx.currentTime); // A2 clean note
+    e.sub = this.osc('sine', 46);
+    e.subGain = this.gain(0.03);
+    e.sub.connect(e.subGain).connect(e.bus);
 
-    this.engineOsc2.type = 'sine';
-    this.engineOsc2.frequency.setValueAtTime(165, this.ctx.currentTime); // E3 (Fifth interval)
+    e.core1 = this.osc('sawtooth', 48);
+    e.core2 = this.osc('sawtooth', 48);
+    e.core2.detune.value = 14;
+    e.coreFilter = this.filter('lowpass', 150, 1.2);
+    e.coreGain = this.gain(0.03);
+    e.core1.connect(e.coreFilter);
+    e.core2.connect(e.coreFilter);
+    e.coreFilter.connect(e.coreGain).connect(e.bus);
 
-    this.turbineOsc.type = 'triangle';
-    this.turbineOsc.frequency.setValueAtTime(180, this.ctx.currentTime); // High turbine base
+    e.whine = this.osc('sine', 400);
+    e.whineGain = this.gain(0.004);
+    this.lfo(5.3, 5, e.whine.frequency);
+    e.whine.connect(e.whineGain).connect(e.bus);
 
-    this.engineFilter.type = 'lowpass';
-    this.engineFilter.frequency.setValueAtTime(220, this.ctx.currentTime);
-    this.engineFilter.Q.setValueAtTime(2.5, this.ctx.currentTime);
+    e.rumble = this.noiseSource('brown', true);
+    e.rumbleFilter = this.filter('lowpass', 160, 0.9);
+    e.rumbleGain = this.gain(0.03);
+    e.rumble.connect(e.rumbleFilter).connect(e.rumbleGain).connect(e.bus);
 
-    this.engineGain.gain.setValueAtTime(0.06, this.ctx.currentTime); // Low baseline reactor hum
+    e.hiss = this.noiseSource('pink', true);
+    e.hissFilter = this.filter('bandpass', 500, 0.8);
+    e.hissGain = this.gain(0);
+    e.hiss.connect(e.hissFilter).connect(e.hissGain).connect(e.bus);
 
-    // Connect
-    this.engineOsc1.connect(this.engineFilter);
-    this.engineOsc2.connect(this.engineFilter);
-    this.turbineOsc.connect(this.engineFilter);
-    this.engineFilter.connect(this.engineGain);
-    this.engineGain.connect(this.masterGain);
-
-    // Start oscillators
-    this.engineOsc1.start(0);
-    this.engineOsc2.start(0);
-    this.turbineOsc.start(0);
-  }
-
-  setupThrusters() {
-    // Generate white noise for thruster plasma hiss
-    const bufferSize = 2 * this.ctx.sampleRate;
-    const noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
-    const output = noiseBuffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) {
-      output[i] = Math.random() * 2 - 1;
-    }
-
-    this.thrusterNoise = this.ctx.createBufferSource();
-    this.thrusterNoise.buffer = noiseBuffer;
-    this.thrusterNoise.loop = true;
-
-    // Resonant bandpass filter that sweeps up to sound like a jet thrusting plasma
-    this.thrusterFilter = this.ctx.createBiquadFilter();
-    this.thrusterFilter.type = 'bandpass';
-    this.thrusterFilter.frequency.setValueAtTime(350, this.ctx.currentTime);
-    this.thrusterFilter.Q.setValueAtTime(2.2, this.ctx.currentTime); // Highly resonant swept hiss
-
-    this.thrusterGain = this.ctx.createGain();
-    this.thrusterGain.gain.setValueAtTime(0, this.ctx.currentTime);
-
-    this.thrusterNoise.connect(this.thrusterFilter);
-    this.thrusterFilter.connect(this.thrusterGain);
-    this.thrusterGain.connect(this.masterGain);
-
-    this.thrusterNoise.start(0);
-  }
-
-  setupWarp() {
-    // Warp/Autopilot cruise is a sweeping oscillator
-    this.warpOsc = this.ctx.createOscillator();
-    this.warpGain = this.ctx.createGain();
-
-    this.warpOsc.type = 'sine';
-    this.warpOsc.frequency.setValueAtTime(80, this.ctx.currentTime);
-
-    this.warpGain.gain.setValueAtTime(0, this.ctx.currentTime);
-
-    this.warpOsc.connect(this.warpGain);
-    this.warpGain.connect(this.masterGain);
-
-    this.warpOsc.start(0);
-  }
-
-  setupAmbientDrone() {
-    // Relaxing background drone - two very low detuned sine waves
-    this.droneOsc1 = this.ctx.createOscillator();
-    this.droneOsc2 = this.ctx.createOscillator();
-    this.droneGain = this.ctx.createGain();
-
-    this.droneOsc1.type = 'sine';
-    this.droneOsc1.frequency.setValueAtTime(73.42, this.ctx.currentTime); // D2
-
-    this.droneOsc2.type = 'sine';
-    this.droneOsc2.frequency.setValueAtTime(73.92, this.ctx.currentTime); // Slightly detuned
-
-    this.droneGain.gain.setValueAtTime(0.06, this.ctx.currentTime); // Quiet background pad
-
-    const droneFilter = this.ctx.createBiquadFilter();
-    droneFilter.type = 'lowpass';
-    droneFilter.frequency.setValueAtTime(120, this.ctx.currentTime);
-
-    this.droneOsc1.connect(droneFilter);
-    this.droneOsc2.connect(droneFilter);
-    droneFilter.connect(this.droneGain);
-    this.droneGain.connect(this.masterGain);
-
-    this.droneOsc1.start(0);
-    this.droneOsc2.start(0);
+    [e.sub, e.core1, e.core2, e.whine, e.rumble, e.hiss].forEach((n) => n.start());
   }
 
   setThrottle(value) {
     if (!this.initialized) return;
-    
-    const now = this.ctx.currentTime;
-    
-    // Map throttle [0, 1] to clean reactor core sines + high turbine triangle whine
-    const reactorFreq1 = 110 + (value * 90);    // 110Hz to 200Hz
-    const reactorFreq2 = 165 + (value * 135);   // 165Hz to 300Hz
-    const turbineFreq = 180 + (value * 500);    // 180Hz to 680Hz (crystalline energy whine)
-    
-    const volume = 0.06 + (value * 0.16); 
-    const filterCutoff = 220 + (value * 1500);   // Opens filter wide to let the turbine whistle shine!
-    
-    this.engineOsc1.frequency.exponentialRampToValueAtTime(reactorFreq1, now + 0.12);
-    this.engineOsc2.frequency.exponentialRampToValueAtTime(reactorFreq2, now + 0.12);
-    this.turbineOsc.frequency.exponentialRampToValueAtTime(turbineFreq, now + 0.18);
-    this.engineGain.gain.linearRampToValueAtTime(volume, now + 0.12);
-    this.engineFilter.frequency.exponentialRampToValueAtTime(filterCutoff, now + 0.18);
+    const v = Math.max(0, Math.min(1, value));
+    const e = this.engine;
+    const t = 0.25;
+    this.ramp(e.sub.frequency, 44 + v * 16, t);
+    this.ramp(e.subGain.gain, 0.03 + v * 0.06, t);
+    this.ramp(e.core1.frequency, 48 + v * 32, t);
+    this.ramp(e.core2.frequency, 48 + v * 32, t);
+    this.ramp(e.coreFilter.frequency, 150 + v * 1100, t);
+    this.ramp(e.coreGain.gain, 0.03 + v * 0.07, t);
+    this.ramp(e.whine.frequency, 380 + v * 760, t * 1.6);
+    this.ramp(e.whineGain.gain, 0.004 + v * 0.018, t);
+    this.ramp(e.rumbleFilter.frequency, 160 + v * 320, t);
+    this.ramp(e.rumbleGain.gain, 0.03 + v * 0.2, t);
+    this.ramp(e.hissFilter.frequency, 500 + v * 2000, t);
+    this.ramp(e.hissGain.gain, v * 0.12, t);
+  }
 
-    // Map throttle to plasma thruster noise: sweeps up from 350Hz to 1600Hz
-    const thrusterVol = value * 0.22;
-    const thrusterCutoff = 350 + (value * 1250);
-    
-    this.thrusterGain.gain.linearRampToValueAtTime(thrusterVol, now + 0.12);
-    this.thrusterFilter.frequency.exponentialRampToValueAtTime(thrusterCutoff, now + 0.18);
+  // Autopilot cruise: a hyperdrive drone that spools up — fifths of detuned saws through a slowly
+  // sweeping resonant filter, a throb, and a high shimmer of filtered noise
+  setupWarp() {
+    const w = (this.warp = {});
+    w.out = this.gain(0);
+    this.out(w.out, { reverb: 0.3 });
+
+    w.throb = this.gain(0.8);
+    this.lfo(2.1, 0.2, w.throb.gain);
+    w.throb.connect(w.out);
+
+    w.filter = this.filter('lowpass', 300, 5);
+    w.sweep = this.lfo(0.3, 180, w.filter.frequency);
+    w.filter.connect(w.throb);
+
+    w.oscs = [[55, 0], [55, 9], [82.5, -6], [110, 4]].map(([f, detune]) => {
+      const o = this.osc('sawtooth', f);
+      o.detune.value = detune;
+      o.connect(w.filter);
+      o.start();
+      return o;
+    });
+
+    w.shimmer = this.noiseSource('white', true);
+    w.shimmerFilter = this.filter('bandpass', 3200, 6);
+    w.shimmerGain = this.gain(0.05);
+    this.lfo(5.5, 0.03, w.shimmerGain.gain);
+    w.shimmer.connect(w.shimmerFilter).connect(w.shimmerGain).connect(w.out);
+    w.shimmer.start();
   }
 
   setWarp(active) {
     if (!this.initialized) return;
-
-    const now = this.ctx.currentTime;
-    if (active) {
-      // Ramp warp frequency up and increase volume
-      this.warpOsc.frequency.setValueAtTime(80, now);
-      this.warpOsc.frequency.exponentialRampToValueAtTime(660, now + 1.5); 
-      this.warpGain.gain.linearRampToValueAtTime(0.35, now + 0.4);
-      
-      this.engineGain.gain.linearRampToValueAtTime(0.02, now + 0.4);
-    } else {
-      // Ramp down
-      this.warpOsc.frequency.exponentialRampToValueAtTime(40, now + 0.5);
-      this.warpGain.gain.linearRampToValueAtTime(0, now + 0.5);
-    }
+    const w = this.warp;
+    const t = this.now;
+    const pitch = active ? 1.33 : 1;
+    w.oscs.forEach((o, i) => {
+      const base = [55, 55, 82.5, 110][i];
+      o.frequency.cancelScheduledValues(t);
+      o.frequency.setTargetAtTime(base * pitch, t, active ? 0.7 : 0.25);
+    });
+    w.filter.frequency.cancelScheduledValues(t);
+    w.filter.frequency.setTargetAtTime(active ? 1100 : 300, t, active ? 0.9 : 0.2);
+    w.out.gain.cancelScheduledValues(t);
+    w.out.gain.setTargetAtTime(active ? 0.13 : 0, t, active ? 0.25 : 0.15);
+    // the drive takes over from the thrusters
+    this.ramp(this.engine.bus.gain, active ? 0.45 : 1, 0.6);
   }
 
+  // Cabin ambience: a quiet, slowly breathing pad and air-handling room tone
+  setupAmbience() {
+    const a = (this.ambience = {});
+    a.out = this.gain(0.02);
+    this.out(a.out, { reverb: 0.5 });
+    a.filter = this.filter('lowpass', 420, 0.6);
+    this.lfo(0.04, 160, a.filter.frequency);
+    a.filter.connect(a.out);
+    [[73.42, 0], [110, 5], [146.83, -7], [73.42, 11]].forEach(([f, d]) => {
+      const o = this.osc('sine', f);
+      o.detune.value = d;
+      o.connect(a.filter);
+      o.start();
+    });
+    a.room = this.noiseSource('pink', true);
+    a.roomFilter = this.filter('bandpass', 260, 0.5);
+    a.roomGain = this.gain(0.015);
+    a.room.connect(a.roomFilter).connect(a.roomGain).connect(this.bus);
+    a.room.start();
+  }
+
+  // Tractor beam: a pulsing, resonant hum; the pulse comes from LFOs, not per-frame code
   setupTractor() {
-    this.tractorOsc = this.ctx.createOscillator();
-    this.tractorGain = this.ctx.createGain();
-
-    this.tractorOsc.type = 'sawtooth';
-    this.tractorOsc.frequency.setValueAtTime(150, this.ctx.currentTime);
-
-    this.tractorFilter = this.ctx.createBiquadFilter();
-    this.tractorFilter.type = 'lowpass';
-    this.tractorFilter.frequency.setValueAtTime(250, this.ctx.currentTime);
-    this.tractorFilter.Q.setValueAtTime(4.0, this.ctx.currentTime);
-
-    this.tractorGain.gain.setValueAtTime(0, this.ctx.currentTime);
-
-    this.tractorOsc.connect(this.tractorFilter);
-    this.tractorFilter.connect(this.tractorGain);
-    this.tractorGain.connect(this.masterGain);
-
-    this.tractorOsc.start(0);
+    const b = (this.tractor = {});
+    b.out = this.gain(0);
+    this.out(b.out, { reverb: 0.25 });
+    b.pulse = this.gain(0.7);
+    this.lfo(7, 0.3, b.pulse.gain);
+    b.pulse.connect(b.out);
+    b.filter = this.filter('bandpass', 420, 6);
+    this.lfo(0.8, 160, b.filter.frequency);
+    b.filter.connect(b.pulse);
+    b.osc1 = this.osc('sawtooth', 130);
+    b.osc2 = this.osc('sawtooth', 195);
+    b.osc2.detune.value = 8;
+    this.lfo(0.8, 12, b.osc1.frequency);
+    b.osc1.connect(b.filter);
+    b.osc2.connect(b.filter);
+    b.osc1.start();
+    b.osc2.start();
   }
 
   setTractorBeam(active) {
-    if (!this.initialized) return;
-
-    const now = this.ctx.currentTime;
-    if (active) {
-      const modSpeed = Date.now() * 0.008;
-      const freq = 130 + Math.sin(modSpeed) * 30;
-      this.tractorOsc.frequency.setValueAtTime(freq, now);
-      
-      this.tractorGain.gain.linearRampToValueAtTime(0.18, now + 0.1);
-      this.tractorFilter.frequency.setValueAtTime(250 + Math.sin(modSpeed) * 100, now);
-    } else {
-      this.tractorGain.gain.linearRampToValueAtTime(0, now + 0.15);
-    }
+    if (!this.initialized || active === this.tractorOn) return;
+    this.tractorOn = active;
+    this.ramp(this.tractor.out.gain, active ? 0.24 : 0, active ? 0.15 : 0.25);
   }
 
+  // ------------------------------------------------------------------------------------------
+  // One-shots
+  // ------------------------------------------------------------------------------------------
+
+  // Console blip: a clean tone with a quiet octave, very short
   playBeep() {
     if (!this.initialized || this.muted) return;
-
-    const now = this.ctx.currentTime;
-    const osc = this.ctx.createOscillator();
-    const gain = this.ctx.createGain();
-
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(880, now); // A5 beep
-    osc.frequency.exponentialRampToValueAtTime(440, now + 0.12);
-
-    gain.gain.setValueAtTime(0.12, now);
-    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.12);
-
-    osc.connect(gain);
-    gain.connect(this.masterGain);
-    
-    osc.start(now);
-    osc.stop(now + 0.13);
+    const t = this.now;
+    const g = this.gain();
+    this.envelope(g.gain, t, 0.004, 0.13, 0.11);
+    [[1318.5, 1], [2637, 0.22]].forEach(([f, level]) => {
+      const o = this.osc('sine', f);
+      o.frequency.setValueAtTime(f, t);
+      o.frequency.exponentialRampToValueAtTime(f * 0.94, t + 0.1);
+      const lg = this.gain(level);
+      o.connect(lg).connect(g);
+      o.start(t);
+      o.stop(t + 0.16);
+    });
+    this.out(g, { reverb: 0.12 });
   }
 
+  // Twin wingtip guns, left then right: a noise click, a falling resonant zap and a short body
   playLaserFire() {
     if (!this.initialized || this.muted) return;
+    const t0 = this.now;
+    [-1, 1].forEach((side, i) => {
+      const t = t0 + i * 0.035;
+      const pan = side * 0.45;
+      const wobble = 1 + (Math.random() - 0.5) * 0.06;
 
-    const now = this.ctx.currentTime;
-    
-    for (let i = 0; i < 2; i++) {
-      const delay = i * 0.05;
-      const osc = this.ctx.createOscillator();
-      const gain = this.ctx.createGain();
-      const filter = this.ctx.createBiquadFilter();
+      const click = this.noiseSource('white');
+      const clickHp = this.filter('highpass', 2500, 0.7);
+      const clickGain = this.gain();
+      this.envelope(clickGain.gain, t, 0.001, 0.2, 0.03);
+      click.connect(clickHp).connect(clickGain);
+      this.out(clickGain, { pan, reverb: 0.05 });
+      click.start(t, Math.random());
+      click.stop(t + 0.05);
 
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(700 - (i * 50), now + delay);
-      osc.frequency.exponentialRampToValueAtTime(100, now + delay + 0.18);
+      const zap = this.osc('square', 1700 * wobble);
+      zap.frequency.setValueAtTime(1700 * wobble, t);
+      zap.frequency.exponentialRampToValueAtTime(170, t + 0.17);
+      const zapBp = this.filter('bandpass', 2600, 3.5);
+      zapBp.frequency.setValueAtTime(2600, t);
+      zapBp.frequency.exponentialRampToValueAtTime(450, t + 0.17);
+      const zapGain = this.gain();
+      this.envelope(zapGain.gain, t, 0.002, 0.38, 0.19);
+      zap.connect(zapBp).connect(zapGain);
+      this.out(zapGain, { pan, reverb: 0.16 });
+      zap.start(t);
+      zap.stop(t + 0.22);
 
-      filter.type = 'lowpass';
-      filter.frequency.setValueAtTime(800, now + delay);
-      filter.frequency.exponentialRampToValueAtTime(300, now + delay + 0.18);
-
-      gain.gain.setValueAtTime(0.2, now + delay);
-      gain.gain.exponentialRampToValueAtTime(0.01, now + delay + 0.18);
-
-      osc.connect(filter);
-      filter.connect(gain);
-      gain.connect(this.masterGain);
-
-      osc.start(now + delay);
-      osc.stop(now + delay + 0.19);
-    }
+      const body = this.osc('sawtooth', 420 * wobble);
+      body.frequency.setValueAtTime(420 * wobble, t);
+      body.frequency.exponentialRampToValueAtTime(70, t + 0.12);
+      const bodyLp = this.filter('lowpass', 900, 1);
+      const bodyGain = this.gain();
+      this.envelope(bodyGain.gain, t, 0.002, 0.15, 0.12);
+      body.connect(bodyLp).connect(bodyGain);
+      this.out(bodyGain, { pan: pan * 0.5, reverb: 0.08 });
+      body.start(t);
+      body.stop(t + 0.15);
+    });
   }
 
+  // Engaged: a bright rising two-note chime. Released or refused: a soft falling two-tone.
   playAutopilotAlert(engaged) {
     if (!this.initialized || this.muted) return;
-
-    const now = this.ctx.currentTime;
-    
+    const t = this.now;
     if (engaged) {
-      const b1 = this.ctx.createOscillator();
-      const g1 = this.ctx.createGain();
-      b1.type = 'sine';
-      b1.frequency.setValueAtTime(660, now); // E5
-      b1.frequency.setValueAtTime(880, now + 0.08); // A5
-      g1.gain.setValueAtTime(0.15, now);
-      g1.gain.exponentialRampToValueAtTime(0.01, now + 0.18);
-      b1.connect(g1);
-      g1.connect(this.masterGain);
-      b1.start(now);
-      b1.stop(now + 0.2);
+      [[659.25, 0], [987.77, 0.075]].forEach(([f, delay]) => {
+        const g = this.gain();
+        this.envelope(g.gain, t + delay, 0.006, 0.14, 0.38);
+        [['triangle', f, 1], ['sine', f * 2, 0.3]].forEach(([type, freq, level]) => {
+          const o = this.osc(type, freq);
+          const lg = this.gain(level);
+          o.connect(lg).connect(g);
+          o.start(t + delay);
+          o.stop(t + delay + 0.45);
+        });
+        this.out(g, { reverb: 0.3 });
+      });
     } else {
-      const b2 = this.ctx.createOscillator();
-      const g2 = this.ctx.createGain();
-      b2.type = 'sawtooth';
-      b2.frequency.setValueAtTime(220, now); // A3
-      b2.frequency.setValueAtTime(165, now + 0.08); // E3
-      
-      const f2 = this.ctx.createBiquadFilter();
-      f2.type = 'lowpass';
-      f2.frequency.setValueAtTime(300, now);
-      
-      g2.gain.setValueAtTime(0.12, now);
-      g2.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
-      
-      b2.connect(f2);
-      f2.connect(g2);
-      g2.connect(this.masterGain);
-      b2.start(now);
-      b2.stop(now + 0.22);
+      [[392, 0], [261.63, 0.09]].forEach(([f, delay]) => {
+        const o = this.osc('square', f);
+        const lp = this.filter('lowpass', 1100, 0.8);
+        const g = this.gain();
+        this.envelope(g.gain, t + delay, 0.005, 0.1, 0.16);
+        o.connect(lp).connect(g);
+        this.out(g, { reverb: 0.15 });
+        o.start(t + delay);
+        o.stop(t + delay + 0.2);
+      });
     }
   }
 
+  // Jump: the charging saw sweep and its pop, thickened by a detuned twin, an air rush that
+  // swells with it, and a sub boom with a long tail when the ship goes
   playWarpJump() {
     if (!this.initialized || this.muted) return;
+    const now = this.now;
 
-    const now = this.ctx.currentTime;
-    
-    const osc = this.ctx.createOscillator();
-    const filter = this.ctx.createBiquadFilter();
-    const gain = this.ctx.createGain();
-    
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(80, now);
-    osc.frequency.exponentialRampToValueAtTime(1400, now + 0.35);
-    osc.frequency.setValueAtTime(50, now + 0.35); // warp pop pop
-    
-    filter.type = 'lowpass';
+    // the signature sweep
+    const sweepGain = this.gain();
+    sweepGain.gain.setValueAtTime(0.16, now);
+    sweepGain.gain.setValueAtTime(0.24, now + 0.3);
+    sweepGain.gain.exponentialRampToValueAtTime(0.001, now + 0.8);
+    const filter = this.filter('lowpass', 400, 1.5);
     filter.frequency.setValueAtTime(400, now);
-    filter.frequency.exponentialRampToValueAtTime(3000, now + 0.35);
-    
-    gain.gain.setValueAtTime(0.18, now);
-    gain.gain.setValueAtTime(0.28, now + 0.3);
-    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.75);
-    
-    osc.connect(filter);
-    filter.connect(gain);
-    gain.connect(this.masterGain);
-    
-    osc.start(now);
-    osc.stop(now + 0.77);
+    filter.frequency.exponentialRampToValueAtTime(3200, now + 0.35);
+    filter.frequency.exponentialRampToValueAtTime(500, now + 0.8);
+    [0, 12].forEach((detune) => {
+      const o = this.osc('sawtooth', 80);
+      o.detune.value = detune;
+      o.frequency.setValueAtTime(80, now);
+      o.frequency.exponentialRampToValueAtTime(1400, now + 0.35);
+      o.frequency.setValueAtTime(50, now + 0.35);
+      o.connect(filter);
+      o.start(now);
+      o.stop(now + 0.82);
+    });
+    filter.connect(sweepGain);
+    this.out(sweepGain, { reverb: 0.3 });
+
+    // air rush rising into the jump
+    const rush = this.noiseSource('pink');
+    const rushBp = this.filter('bandpass', 300, 1.2);
+    rushBp.frequency.setValueAtTime(300, now);
+    rushBp.frequency.exponentialRampToValueAtTime(5000, now + 0.36);
+    rushBp.frequency.exponentialRampToValueAtTime(400, now + 1.1);
+    const rushGain = this.gain();
+    rushGain.gain.setValueAtTime(0.0001, now);
+    rushGain.gain.exponentialRampToValueAtTime(0.35, now + 0.34);
+    rushGain.gain.exponentialRampToValueAtTime(0.0001, now + 1.1);
+    rush.connect(rushBp).connect(rushGain);
+    this.out(rushGain, { reverb: 0.35 });
+    rush.start(now);
+    rush.stop(now + 1.15);
+
+    // sub boom at the moment of the jump
+    const boom = this.osc('sine', 140);
+    boom.frequency.setValueAtTime(140, now + 0.35);
+    boom.frequency.exponentialRampToValueAtTime(30, now + 1.0);
+    const boomGain = this.gain();
+    this.envelope(boomGain.gain, now + 0.35, 0.01, 0.4, 0.8);
+    boom.connect(boomGain);
+    this.out(boomGain, { reverb: 0.45 });
+    boom.start(now + 0.34);
+    boom.stop(now + 1.25);
   }
 
+  // A crack, a roaring body of falling noise, a sub thump and crackling debris, in a long tail
   playShipExplosion() {
     if (!this.initialized || this.muted) return;
+    const t = this.now;
 
-    const now = this.ctx.currentTime;
-    
-    // Low-frequency rumble
-    const osc = this.ctx.createOscillator();
-    const filter = this.ctx.createBiquadFilter();
-    const gain = this.ctx.createGain();
-    
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(120, now);
-    osc.frequency.linearRampToValueAtTime(10, now + 1.2);
-    
-    filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(250, now);
-    filter.frequency.exponentialRampToValueAtTime(10, now + 1.2);
-    
-    gain.gain.setValueAtTime(0.5, now);
-    gain.gain.exponentialRampToValueAtTime(0.01, now + 1.2);
-    
-    osc.connect(filter);
-    filter.connect(gain);
-    gain.connect(this.masterGain);
-    
-    osc.start(now);
-    osc.stop(now + 1.25);
+    const crack = this.noiseSource('white');
+    const crackHp = this.filter('highpass', 1200, 0.7);
+    const crackGain = this.gain();
+    this.envelope(crackGain.gain, t, 0.002, 0.5, 0.18);
+    crack.connect(crackHp).connect(crackGain);
+    this.out(crackGain, { reverb: 0.4 });
+    crack.start(t);
+    crack.stop(t + 0.25);
 
-    // White noise explosion blast
-    try {
-      const bufferSize = this.ctx.sampleRate * 1.5;
-      const noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
-      const output = noiseBuffer.getChannelData(0);
-      for (let i = 0; i < bufferSize; i++) {
-        output[i] = Math.random() * 2 - 1;
-      }
-      
-      const noiseSource = this.ctx.createBufferSource();
-      noiseSource.buffer = noiseBuffer;
-      
-      const noiseFilter = this.ctx.createBiquadFilter();
-      noiseFilter.type = 'lowpass';
-      noiseFilter.frequency.setValueAtTime(180, now);
-      noiseFilter.frequency.exponentialRampToValueAtTime(20, now + 1.4);
-      
-      const noiseGain = this.ctx.createGain();
-      noiseGain.gain.setValueAtTime(0.4, now);
-      noiseGain.gain.exponentialRampToValueAtTime(0.01, now + 1.4);
-      
-      noiseSource.connect(noiseFilter);
-      noiseFilter.connect(noiseGain);
-      noiseGain.connect(this.masterGain);
-      
-      noiseSource.start(now);
-      noiseSource.stop(now + 1.45);
-    } catch (e) {
-      console.warn("Noise buffer generation failed:", e);
+    const roar = this.noiseSource('brown');
+    const roarLp = this.filter('lowpass', 1600, 0.9);
+    roarLp.frequency.setValueAtTime(1600, t);
+    roarLp.frequency.exponentialRampToValueAtTime(60, t + 2.6);
+    const roarGain = this.gain();
+    this.envelope(roarGain.gain, t, 0.01, 0.9, 2.6);
+    roar.connect(roarLp).connect(roarGain);
+    this.out(roarGain, { reverb: 0.5 });
+    roar.start(t);
+    roar.stop(t + 2.8);
+
+    const thump = this.osc('sine', 95);
+    thump.frequency.setValueAtTime(95, t);
+    thump.frequency.exponentialRampToValueAtTime(24, t + 1.2);
+    const thumpGain = this.gain();
+    this.envelope(thumpGain.gain, t, 0.005, 0.7, 1.2);
+    thump.connect(thumpGain);
+    this.out(thumpGain, { reverb: 0.3 });
+    thump.start(t);
+    thump.stop(t + 1.3);
+
+    // debris: short random grains, scattered across the stereo field
+    for (let i = 0; i < 22; i++) {
+      const at = t + 0.05 + Math.pow(Math.random(), 1.6) * 1.6;
+      const grain = this.noiseSource('white');
+      const bp = this.filter('bandpass', 800 + Math.random() * 3500, 2);
+      const g = this.gain();
+      this.envelope(g.gain, at, 0.001, 0.05 + Math.random() * 0.08, 0.03 + Math.random() * 0.06);
+      grain.connect(bp).connect(g);
+      this.out(g, { pan: Math.random() * 1.6 - 0.8, reverb: 0.35 });
+      grain.start(at, Math.random() * 2);
+      grain.stop(at + 0.12);
     }
   }
 
   setMute(muted) {
     this.muted = muted;
     if (!this.initialized) return;
-
-    const now = this.ctx.currentTime;
-    if (muted) {
-      this.masterGain.gain.linearRampToValueAtTime(0, now + 0.1);
-    } else {
-      this.masterGain.gain.linearRampToValueAtTime(0.35, now + 0.1);
-    }
+    if (this.ctx.state === 'suspended' && !muted) this.ctx.resume();
+    this.masterGain.gain.setTargetAtTime(muted ? 0 : MASTER_VOLUME, this.now, 0.04);
   }
 }
 

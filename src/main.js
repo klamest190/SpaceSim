@@ -75,7 +75,7 @@ class Game {
     
     // Instantiate controllers
     this.solarSystem = new SolarSystem(this.scene, this.renderer);
-    this.ship = new Spaceship(this.scene);
+    this.ship = new Spaceship(this.scene, this.renderer);
     
     // Restore the pilot career, then spawn near Earth with its station locked as first destination
     this.savedGame = loadGame();

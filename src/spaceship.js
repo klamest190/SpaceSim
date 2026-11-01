@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { controls } from './controls';
 import { spaceAudio } from './audio';
 import { atmosphereTop } from './solarSystem';
+import { ShipModel, GUN_MUZZLES } from './shipModel';
 
 const DOCK_STANDOFF = 1.5;    // closest the pilot can glide in to a station, away from its planet
 export const STATION_HOLD_STANDOFF = 4.0; // the autopilot waits here: outside docking range (2.5), the pilot glides in
@@ -30,7 +31,8 @@ export function arrivalRadius(obj) {
 }
 
 export class Spaceship {
-  constructor(scene) {
+  constructor(scene, renderer = null) {
+    this.renderer = renderer;
     this.scene = scene;
     
     // Warp state flag for cinematic autopilot bypass
@@ -208,116 +210,14 @@ export class Spaceship {
   }
 
   createSpaceshipMesh() {
-    const shipGroup = new THREE.Group();
-    
-    // Cockpit
-    const canopyGeom = new THREE.ConeGeometry(0.6, 2.5, 8);
-    canopyGeom.rotateX(Math.PI / 2);
-    const canopyMat = new THREE.MeshPhongMaterial({
-      color: 0x00f0ff,
-      emissive: 0x005070,
-      transparent: true,
-      opacity: 0.7,
-      shininess: 90
-    });
-    const canopy = new THREE.Mesh(canopyGeom, canopyMat);
-    canopy.position.set(0, 0.15, -0.6);
-    shipGroup.add(canopy);
-
-    // Fuselage
-    const bodyGeom = new THREE.CylinderGeometry(0.8, 1.1, 4, 8);
-    bodyGeom.rotateX(Math.PI / 2);
-    const bodyMat = new THREE.MeshStandardMaterial({
-      color: 0x242d38,
-      roughness: 0.4,
-      metalness: 0.8
-    });
-    const fuselage = new THREE.Mesh(bodyGeom, bodyMat);
-    fuselage.position.set(0, 0, 1);
-    shipGroup.add(fuselage);
-
-    // Wings
-    const wingShape = new THREE.Shape();
-    wingShape.moveTo(0, 0);
-    wingShape.lineTo(4, -1.5);
-    wingShape.lineTo(4.5, -2);
-    wingShape.lineTo(0.8, -1.8);
-    wingShape.lineTo(0, 0);
-
-    const extrudeSettings = { depth: 0.1, bevelEnabled: true, bevelSegments: 2, steps: 1, bevelSize: 0.05, bevelThickness: 0.05 };
-    const wingGeom = new THREE.ExtrudeGeometry(wingShape, extrudeSettings);
-    wingGeom.rotateX(Math.PI / 2);
-    wingGeom.center();
-    
-    const wingMat = new THREE.MeshStandardMaterial({
-      color: 0x181e24,
-      roughness: 0.5,
-      metalness: 0.9
-    });
-
-    const leftWing = new THREE.Mesh(wingGeom, wingMat);
-    leftWing.position.set(-2.2, -0.1, 1.8);
-    leftWing.scale.set(1.2, 1, 1);
-    shipGroup.add(leftWing);
-
-    const rightWing = new THREE.Mesh(wingGeom, wingMat);
-    rightWing.position.set(2.2, -0.1, 1.8);
-    rightWing.scale.set(-1.2, 1, 1);
-    shipGroup.add(rightWing);
-
-    // Lights
-    const lightGeom = new THREE.SphereGeometry(0.12, 8, 8);
-    const redMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-    const greenMat = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
-
-    const leftLight = new THREE.Mesh(lightGeom, redMat);
-    leftLight.position.set(-4.5, -0.1, 2.5);
-    shipGroup.add(leftLight);
-
-    const rightLight = new THREE.Mesh(lightGeom, greenMat);
-    rightLight.position.set(4.5, -0.1, 2.5);
-    shipGroup.add(rightLight);
-
-    // Engines
-    const engineGeom = new THREE.CylinderGeometry(0.4, 0.5, 0.8, 8);
-    engineGeom.rotateX(Math.PI / 2);
-    const engineMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.9, roughness: 0.4 });
-    
-    const leftEngine = new THREE.Mesh(engineGeom, engineMat);
-    leftEngine.position.set(-0.5, 0, 3);
-    shipGroup.add(leftEngine);
-
-    const rightEngine = new THREE.Mesh(engineGeom, engineMat);
-    rightEngine.position.set(0.5, 0, 3);
-    shipGroup.add(rightEngine);
-
-    // Glows
-    const glowGeom = new THREE.CylinderGeometry(0.3, 0.2, 0.4, 8);
-    glowGeom.rotateX(Math.PI / 2);
-    this.glowMat = new THREE.MeshBasicMaterial({
-      color: 0x00a8ff,
-      transparent: true,
-      opacity: 0.8
-    });
-    
-    this.leftGlow = new THREE.Mesh(glowGeom, this.glowMat);
-    this.leftGlow.position.set(-0.5, 0, 3.4);
-    shipGroup.add(this.leftGlow);
-
-    this.rightGlow = new THREE.Mesh(glowGeom, this.glowMat);
-    this.rightGlow.position.set(0.5, 0, 3.4);
-    shipGroup.add(this.rightGlow);
-
-    shipGroup.castShadow = true;
-    shipGroup.receiveShadow = true;
-    shipGroup.scale.set(0.4, 0.4, 0.4);
-
-    return shipGroup;
+    this.model = new ShipModel(this.renderer);
+    return this.model.group;
   }
 
   update(delta, solarSystem) {
     if (delta <= 0) return;
     if (delta > 0.1) delta = 0.1;
+    this.lastDelta = delta;
 
     // 0. If destroyed, freeze physics and sounds
     if (this.isDestroyed) {
@@ -447,9 +347,7 @@ export class Spaceship {
     document.getElementById('laser-flash-r').style.opacity = 0.95;
 
     const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.quaternion);
-    const leftCannonLocal = new THREE.Vector3(-0.9, -0.05, 0.4).applyQuaternion(this.quaternion).add(this.position);
-    const rightCannonLocal = new THREE.Vector3(0.9, -0.05, 0.4).applyQuaternion(this.quaternion).add(this.position);
-    const positions = [leftCannonLocal, rightCannonLocal];
+    const positions = GUN_MUZZLES.map((m) => m.clone().applyQuaternion(this.quaternion).add(this.position));
 
     const boltSpeed = 250;
     const velocityVec = forward.clone().multiplyScalar(boltSpeed);
@@ -912,41 +810,8 @@ export class Spaceship {
       this.lastAutopilotState = this.autopilotActive;
     }
 
-    // Dynamic jet engine glow scaling (nozzle glows hot/longer when thrusting)
-    const glowRadiusScale = 0.5 + soundThrottle * 0.8;
-    const glowLengthScale = 0.2 + soundThrottle * 2.5;
-    this.leftGlow.scale.set(glowRadiusScale, glowRadiusScale, glowLengthScale);
-    this.rightGlow.scale.set(glowRadiusScale, glowRadiusScale, glowLengthScale);
-    
-    // Physical color heat mapping (blackbody style: Red/Orange -> Yellow -> Blinding Cyan)
-    if (this.autopilotActive) {
-      this.glowMat.color.setHex(0xff7700);
-      this.glowMat.opacity = 0.95;
-    } else {
-      if (soundThrottle < 0.1) {
-        // Idle: low dim red/orange
-        this.glowMat.color.setRGB(0.35, 0.08, 0.0);
-        this.glowMat.opacity = 0.35;
-      } else if (soundThrottle < 0.6) {
-        // Mid: transition from warm orange to bright yellow
-        const factor = (soundThrottle - 0.1) / 0.5;
-        this.glowMat.color.setRGB(
-          0.35 + factor * 0.65,
-          0.08 + factor * 0.6,
-          0.0
-        );
-        this.glowMat.opacity = 0.35 + factor * 0.45;
-      } else {
-        // High: transition from bright yellow to super-heated cyan
-        const factor = (soundThrottle - 0.6) / 0.4;
-        this.glowMat.color.setRGB(
-          1.0 - factor * 0.8,
-          0.68 + factor * 0.32,
-          factor * 1.0
-        );
-        this.glowMat.opacity = 0.8 + factor * 0.2;
-      }
-    }
+    // Plumes, nozzle glow and nav lights
+    this.model.update(this.lastDelta || 0.016, soundThrottle, this.autopilotActive && !this.isHolding());
   }
 
   updateCamera(camera, delta) {

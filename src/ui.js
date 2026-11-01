@@ -12,6 +12,85 @@ const PROMPT_KEYS = {
 };
 
 // Game units -> readable distance (arcade scale: 1 unit = 100.000 km)
+// What kind of thing is locked, for the target VDU
+function targetKind(target) {
+  if (target.name === 'Sun') return 'STERN';
+  if (target.group && target.radius) return 'PLANET';
+  if (target.name.startsWith('ASTEROID')) return 'ASTEROID';
+  if (target.name.includes('HÄNDLER')) return 'FRACHTER';
+  return 'STATION';
+}
+
+const WIRE_SEGMENT_LIMIT = 2400;
+
+// Line segments (x1,y1,z1,x2,y2,z2...) of a target's shape inside a unit sphere; built once per target
+function wireframeFor(target) {
+  if (target.__wire) return target.__wire;
+  const out = [];
+  let planet = false;
+  if (target.group && target.radius) {
+    planet = true;
+    // latitude circle at height y, or a meridian at longitude lon
+    const circle = (steps, point) => {
+      for (let i = 0; i < steps; i++) {
+        const a = point((i / steps) * Math.PI * 2);
+        const b = point(((i + 1) / steps) * Math.PI * 2);
+        out.push(a[0], a[1], a[2], b[0], b[1], b[2]);
+      }
+    };
+    for (let lat = -60; lat <= 60; lat += 30) {
+      const phi = THREE.MathUtils.degToRad(lat);
+      circle(36, (t) => [Math.cos(t) * Math.cos(phi), Math.sin(phi), Math.sin(t) * Math.cos(phi)]);
+    }
+    for (let lon = 0; lon < 180; lon += 30) {
+      const l = THREE.MathUtils.degToRad(lon);
+      circle(36, (t) => [Math.cos(t) * Math.cos(l), Math.sin(t), Math.cos(t) * Math.sin(l)]);
+    }
+    const rings = target.data && target.data.rings;
+    if (rings) {
+      [rings.inner, (rings.inner + rings.outer) / 2, rings.outer].forEach((r) => circle(64, (t) => [Math.cos(t) * r, 0, Math.sin(t) * r]));
+      for (let i = 0; i < out.length; i++) out[i] /= rings.outer;
+    }
+  } else if (target.mesh) {
+    const root = target.mesh;
+    root.updateMatrixWorld(true);
+    const inv = root.matrixWorld.clone().invert();
+    const p = new THREE.Vector3();
+    root.traverse((o) => {
+      if (!o.isMesh || !o.geometry) return;
+      const edges = new THREE.EdgesGeometry(o.geometry, 25);
+      const m = inv.clone().multiply(o.matrixWorld);
+      const pos = edges.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        p.fromBufferAttribute(pos, i).applyMatrix4(m);
+        out.push(p.x, p.y, p.z);
+      }
+      edges.dispose();
+    });
+    // Centre and fit into the unit sphere
+    const box = new THREE.Box3();
+    for (let i = 0; i < out.length; i += 3) box.expandByPoint(p.set(out[i], out[i + 1], out[i + 2]));
+    const center = box.getCenter(new THREE.Vector3());
+    let maxR = 1e-6;
+    for (let i = 0; i < out.length; i += 3) maxR = Math.max(maxR, p.set(out[i], out[i + 1], out[i + 2]).distanceTo(center));
+    for (let i = 0; i < out.length; i += 3) {
+      out[i] = (out[i] - center.x) / maxR;
+      out[i + 1] = (out[i + 1] - center.y) / maxR;
+      out[i + 2] = (out[i + 2] - center.z) / maxR;
+    }
+  }
+  let segments = Float32Array.from(out);
+  const count = segments.length / 6;
+  if (count > WIRE_SEGMENT_LIMIT) {
+    const step = Math.ceil(count / WIRE_SEGMENT_LIMIT);
+    const kept = [];
+    for (let i = 0; i < count; i += step) kept.push(...segments.subarray(i * 6, i * 6 + 6));
+    segments = Float32Array.from(kept);
+  }
+  target.__wire = { segments, planet, sun: target.name === 'Sun' };
+  return target.__wire;
+}
+
 function formatDist(gameDistance) {
   const km = gameDistance * 100000;
   if (km > 149600000) return `${(km / 149597870.7).toFixed(2).replace('.', ',')} AE`;
@@ -58,8 +137,10 @@ export class UI {
     this.shieldB = document.getElementById('shield-b');
     this.shieldL = document.getElementById('shield-l');
     this.shieldR = document.getElementById('shield-r');
-    this.armorF = document.getElementById('armor-f');
-    this.armorB = document.getElementById('armor-b');
+    this.shieldVal = document.getElementById('shield-val');
+    this.targetKind = document.getElementById('target-kind');
+    this.lamps = {};
+    document.querySelectorAll('#annunciator .lamp').forEach((el) => { this.lamps[el.dataset.lamp] = el; });
     
     // Speeds
     this.setSpeedBar = document.getElementById('set-speed-bar');
@@ -157,6 +238,7 @@ export class UI {
 
     // Cockpit vs. external view
     this.cockpitLayer = document.getElementById('cockpit-layer');
+    this.frameLight = {};
     this.extAim = document.getElementById('ext-aim');
     this.extThrottle = document.getElementById('ext-throttle');
     this.extSpeed = document.getElementById('ext-speed');
@@ -454,7 +536,10 @@ export class UI {
   update(ship, solarSystem, camera) {
     const external = ship.cameraMode !== 'cockpit';
     this.hud.classList.toggle('view-external', external);
-    if (!external) this.swingCockpit(ship, camera);
+    if (!external) {
+      this.swingCockpit(ship, camera);
+      this.lightCockpit(ship, solarSystem);
+    }
 
     // Update passive target indicators (Privateer Style)
     if (this.passiveMarkers) {
@@ -523,15 +608,9 @@ export class UI {
     // 4. Set Speed & Actual Speed meters
     const currentSpeed = ship.velocity.length();
     const setSpeedPercent = Math.round(ship.throttle * 100);
-    if (setSpeedPercent < 0) {
-      this.setSpeedBar.style.width = `${Math.abs(setSpeedPercent)}%`;
-      this.setSpeedBar.style.background = '#ff3b2f'; // Red for reverse flight
-      this.setSpeedVal.innerText = `R ${Math.abs(setSpeedPercent)}%`;
-    } else {
-      this.setSpeedBar.style.width = `${setSpeedPercent}%`;
-      this.setSpeedBar.style.background = ''; // default theme color
-      this.setSpeedVal.innerText = `${setSpeedPercent}%`;
-    }
+    this.setSpeedBar.style.height = `${Math.abs(setSpeedPercent)}%`;
+    this.setSpeedBar.classList.toggle('reverse', setSpeedPercent < 0); // red column for reverse thrust
+    this.setSpeedVal.innerText = setSpeedPercent < 0 ? `R ${Math.abs(setSpeedPercent)}%` : `${setSpeedPercent}%`;
 
     let displaySpeed = "";
     let speedProgress = 0;
@@ -546,7 +625,7 @@ export class UI {
       speedProgress = Math.min(100, (currentSpeed / ship.maxSpeed) * 100);
     }
     
-    this.actSpeedBar.style.width = `${speedProgress}%`;
+    this.actSpeedBar.style.height = `${speedProgress}%`;
     this.actSpeedVal.innerText = displaySpeed;
 
     // 5. Update HUD stats profiles
@@ -578,12 +657,14 @@ export class UI {
       const relativeSpeedKmS = (this.relSpeed * 1000).toFixed(0);
       this.targetSpeed.innerText = `${Number(relativeSpeedKmS).toLocaleString('de-DE')} km/s`;
 
+      this.targetKind.textContent = targetKind(target);
       this.drawTargetWireframe(target);
       this.updateTargetReticle(target, camera);
     } else {
       this.targetName.innerText = "KEINES";
       this.targetDist.innerText = "---";
       this.targetSpeed.innerText = "---";
+      this.targetKind.textContent = '---';
       this.targetReticle.classList.add('hidden');
       this.clearTargetWireframe();
     }
@@ -603,7 +684,8 @@ export class UI {
     // 10. Gravity and atmosphere warnings, and the altimeter near a planet
     const touchingAtmosphere = ship.atmosphereContact > 0;
     this.gravityAlertText.textContent = touchingAtmosphere ? 'MINDESTHÖHE' : 'SCHWEREFELD';
-    this.gravityAlert.classList.toggle('hidden', !(ship.gravityFieldActive || touchingAtmosphere));
+    this.gravityAlert.classList.toggle('hidden', !(touchingAtmosphere || (external && ship.gravityFieldActive)));
+    this.updateAnnunciator(ship);
     this.updateAltimeter(ship, solarSystem);
 
     // 11. External view readout and aim point
@@ -622,6 +704,56 @@ export class UI {
 
     // 12. Nav computer
     this.navMap.update(ship, solarSystem);
+  }
+
+  // Light inside the cockpit from the same sources that light the ship outside: the Sun (gone in a planet's
+  // shadow) and the nearest planet's day side. Surfaces that face the pilot catch the Sun from behind, the
+  // console catches it through the canopy from ahead, planet light comes in tinted from wherever the planet is.
+  lightCockpit(ship, solarSystem) {
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(ship.quaternion);
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(ship.quaternion);
+    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(ship.quaternion);
+    const toSun = ship.position.clone().negate().normalize();
+    const f = toSun.dot(fwd), r = toSun.dot(right), u = toSun.dot(up);
+    const vis = solarSystem.sunVisibility ?? 1;
+    const q = (v) => Math.round(THREE.MathUtils.clamp(v, 0, 1) * 40) / 40;
+
+    // Planet light: direction to the lit surface below the ship, strength as outside
+    const fill = solarSystem.fillLight;
+    const fillK = fill ? THREE.MathUtils.clamp(fill.intensity / 0.9, 0, 1) : 0;
+    let fillFront = 0, fillBelow = 0;
+    if (fillK > 0) {
+      const toPlanet = fill.position.clone().sub(ship.position).normalize();
+      fillFront = fillK * THREE.MathUtils.clamp(0.75 * toPlanet.dot(fwd) + 0.4 * toPlanet.dot(up) + 0.35, 0, 1);
+      fillBelow = fillK * THREE.MathUtils.clamp(-0.8 * toPlanet.dot(up) + 0.3 * toPlanet.dot(fwd) + 0.2, 0, 1);
+    }
+    const c = fill ? fill.color : null;
+    const hex = c ? c.getHex() : 0x96aac8; // sRGB, as CSS wants it
+    const fillRgb = `${(hex >> 16) & 255}, ${(hex >> 8) & 255}, ${hex & 255}`;
+
+    const consoleSun = vis * THREE.MathUtils.clamp(0.7 * f + 0.45 * u + 0.25, 0, 1);
+    const faceSun = vis * (-f * 0.9 + 0.05);
+    const lightLevel = Math.max(consoleSun, faceSun) * 0.85 + fillK * 0.5 + 0.12;
+    this.setFrameLight(this.cockpitLayer, 'cockpit', {
+      '--face': q(faceSun),
+      '--edge-l': q(vis * (0.8 * r - 0.5 * f + 0.2)),
+      '--edge-r': q(vis * (-0.8 * r - 0.5 * f + 0.2)),
+      '--glint': q(vis * f),
+      '--lip': q(vis * (-0.7 * u - 0.5 * f + 0.2)),
+      '--console': q(consoleSun),
+      '--fill-rgb': fillRgb,
+      '--fill-front': q(fillFront),
+      '--fill-below': q(fillBelow),
+      '--shade': q(1 - lightLevel),
+    });
+  }
+
+  // Write a frame piece's light only when it changed, to keep style work off most frames
+  setFrameLight(el, key, values) {
+    const signature = Object.values(values).join();
+    if (this.frameLight[key] === signature) return;
+    this.frameLight[key] = signature;
+    Object.entries(values).forEach(([name, value]) => el.style.setProperty(name, value));
   }
 
   // Head-look turns the pilot's head, so the whole cockpit slides the other way across the view
@@ -666,25 +798,35 @@ export class UI {
     this.extAim.classList.remove('hidden');
   }
 
-  // Update shields rings borders colored by health percentage
+  // Shield arcs around the ship plan, coloured by charge
   updateShieldsGlow(ship) {
     const shieldPct = ship.shield / ship.maxShield;
-    
-    // Determine colors
     const color = shieldPct > 0.6 ? '#5cff7a' : shieldPct > 0.3 ? '#ffb000' : '#ff3b2f';
-    const glowShadow = `0 0 10px ${color}`;
-
-    const indicators = [this.shieldF, this.shieldB, this.shieldL, this.shieldR];
-    indicators.forEach(ind => {
-      ind.style.borderColor = color;
-      ind.style.boxShadow = glowShadow;
-      ind.style.opacity = 0.3 + shieldPct * 0.7;
+    [this.shieldF, this.shieldB, this.shieldL, this.shieldR].forEach((arc) => {
+      arc.style.stroke = color;
+      arc.style.filter = `drop-shadow(0 0 2px ${color})`;
+      arc.style.opacity = 0.25 + shieldPct * 0.75;
     });
+    this.shieldVal.textContent = `${Math.round(shieldPct * 100)}%`;
+  }
 
-    // Armor bars reflect overall structural health
-    const armorPct = 1.0; // static for now
-    this.armorF.style.width = `${armorPct * 100}%`;
-    this.armorB.style.width = `${armorPct * 100}%`;
+  // Backlit lamps on the binnacle: each one is a condition the pilot should know about
+  updateAnnunciator(ship) {
+    const set = (lamp, state) => {
+      const el = this.lamps[lamp];
+      if (!el || el.dataset.state === state) return;
+      el.dataset.state = state;
+      el.className = state ? `lamp ${state}` : 'lamp';
+    };
+    const shieldPct = ship.shield / ship.maxShield;
+    set('stabil', ship.flightAssist ? 'on' : '');
+    set('auto', ship.autopilotActive ? 'warn' : '');
+    set('halten', ship.autopilotActive && ship.isHolding() ? 'on' : '');
+    set('andock', this.game.dockableStation && !ship.isDocked ? 'on' : '');
+    set('schwere', ship.gravityFieldActive ? 'warn' : '');
+    set('hoehe', ship.atmosphereContact > 0 ? 'alarm' : '');
+    set('schild', shieldPct < 0.3 ? 'alarm' : shieldPct < 0.6 ? 'warn' : '');
+    set('fracht', ship.getCurrentCargoWeight() >= ship.maxCargo ? 'warn' : '');
   }
 
   // The keys that matter right now: fly to the target; held at a station, how to dock or get away;
@@ -751,245 +893,53 @@ export class UI {
     this.targetReticle.classList.remove('hidden');
   }
 
+  // Rotating phosphor wireframe of the locked target, drawn from its real model
   drawTargetWireframe(target) {
-    const width = this.targetCanvas.width;
-    const height = this.targetCanvas.height;
+    const canvas = this.targetCanvas;
+    const size = Math.round(canvas.clientWidth * Math.min(window.devicePixelRatio || 1, 2));
+    if (size > 0 && canvas.width !== size) {
+      canvas.width = size;
+      canvas.height = size;
+    }
     const ctx = this.targetCtx;
+    const w = canvas.width;
+    ctx.clearRect(0, 0, w, w);
+    this.globeAngle += 0.012;
 
-    ctx.clearRect(0, 0, width, height);
-
-    this.globeAngle += 0.02;
-
-    const centerX = width / 2;
-    const centerY = height / 2;
-    const radius = width * 0.32;
-
-    const isStation = target.name.includes("Station") || target.name.includes("Außenposten");
-    const isTradeShip = target.name.includes("HÄNDLER-FRIGATTE");
-    const isAsteroid = target.name.includes("ASTEROID");
-    const isSun = target.name === "Sun";
-    const isEarth = target.name === "Earth";
-    const isSaturn = target.name === "Saturn";
-    const isUranus = target.name === "Uranus";
-
-    if (isSun) {
-      // Draw Sun: burning star with solar flares
-      ctx.strokeStyle = '#ff9900';
-      ctx.fillStyle = 'rgba(255, 170, 0, 0.1)';
-      ctx.lineWidth = 1.5;
-
-      const flareCount = 10;
-      ctx.beginPath();
-      for (let i = 0; i < flareCount; i++) {
-        const angle = (i / flareCount) * Math.PI * 2 + this.globeAngle * 0.5;
-        const outerR = radius * (1.15 + 0.18 * Math.sin(this.globeAngle * 4 + i));
-        const midAngle = ((i + 0.5) / flareCount) * Math.PI * 2 + this.globeAngle * 0.5;
-        const innerR = radius * 0.9;
-        
-        ctx.lineTo(centerX + outerR * Math.cos(angle), centerY + outerR * Math.sin(angle));
-        ctx.lineTo(centerX + innerR * Math.cos(midAngle), centerY + innerR * Math.sin(midAngle));
-      }
-      ctx.closePath();
-      ctx.stroke();
-
-      ctx.strokeStyle = '#ffcc00';
-      ctx.beginPath();
-      ctx.arc(centerX, centerY, radius * 0.85, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-    } 
-    else if (isAsteroid) {
-      // Draw Asteroid: amber faceted irregular rock
-      ctx.strokeStyle = '#ffaa00';
-      ctx.fillStyle = 'rgba(255, 170, 0, 0.08)';
-      ctx.lineWidth = 1.2;
-
-      const id = parseInt(target.name.split("-")[1]) || 1;
-      const seedPoints = 8;
-      const points = [];
-      for (let i = 0; i < seedPoints; i++) {
-        const angle = (i / seedPoints) * Math.PI * 2 + this.globeAngle * 0.8;
-        const radiusOffset = 0.7 + 0.25 * Math.sin(angle * 3 + id) * Math.cos(angle * 2 - id);
-        const r = radius * radiusOffset;
-        points.push({
-          x: centerX + r * Math.cos(angle),
-          y: centerY + r * Math.sin(angle * 0.85)
-        });
-      }
-
-      ctx.beginPath();
-      ctx.moveTo(points[0].x, points[0].y);
-      for (let i = 1; i < seedPoints; i++) {
-        ctx.lineTo(points[i].x, points[i].y);
-      }
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.strokeStyle = 'rgba(255, 170, 0, 0.4)';
-      ctx.beginPath();
-      ctx.moveTo(points[0].x, points[0].y); ctx.lineTo(points[3].x, points[3].y);
-      ctx.moveTo(points[1].x, points[1].y); ctx.lineTo(points[5].x, points[5].y);
-      ctx.moveTo(points[2].x, points[2].y); ctx.lineTo(points[6].x, points[6].y);
-      ctx.moveTo(points[4].x, points[4].y); ctx.lineTo(points[7].x, points[7].y);
-      ctx.stroke();
-    }
-    else if (isStation) {
-      // Draw Space Station: cyan high-tech structure
-      ctx.strokeStyle = '#00ffcc';
-      ctx.fillStyle = 'rgba(0, 255, 204, 0.05)';
-      ctx.lineWidth = 1.2;
-
-      ctx.beginPath();
-      ctx.ellipse(centerX, centerY, radius * 0.95, radius * 0.35, this.globeAngle * 0.3, 0, Math.PI * 2);
-      ctx.stroke();
-
-      ctx.beginPath();
-      ctx.ellipse(centerX, centerY, radius * 0.75, radius * 0.27, this.globeAngle * 0.3, 0, Math.PI * 2);
-      ctx.stroke();
-
-      ctx.beginPath();
-      ctx.rect(centerX - radius * 0.12, centerY - radius * 0.5, radius * 0.24, radius * 1.0);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.beginPath();
-      const angle = this.globeAngle * 0.3;
-      for (let i = 0; i < 4; i++) {
-        const spokeAngle = angle + (i / 4) * Math.PI * 2;
-        const outerX = centerX + radius * 0.95 * Math.cos(spokeAngle);
-        const outerY = centerY + radius * 0.35 * Math.sin(spokeAngle);
-        ctx.moveTo(centerX, centerY);
-        ctx.lineTo(outerX, outerY);
-      }
-      ctx.stroke();
-
-      ctx.fillStyle = 'rgba(0, 150, 255, 0.15)';
-      ctx.strokeStyle = '#00aaff';
-      ctx.beginPath();
-      ctx.rect(centerX - radius * 1.2, centerY - radius * 0.15, radius * 0.35, radius * 0.3);
-      ctx.rect(centerX + radius * 0.85, centerY - radius * 0.15, radius * 0.35, radius * 0.3);
-      ctx.fill();
-      ctx.stroke();
-    }
-    else if (isTradeShip) {
-      // Draw Trade Freighter: yellow/gold cargo freighter shape
-      ctx.strokeStyle = '#ffaa00';
-      ctx.fillStyle = 'rgba(255, 170, 0, 0.06)';
-      ctx.lineWidth = 1.2;
-
-      ctx.beginPath();
-      // Center hull
-      ctx.rect(centerX - radius * 0.15, centerY - radius * 0.6, radius * 0.3, radius * 1.2);
-      // Side cargo pods
-      ctx.rect(centerX - radius * 0.45, centerY - radius * 0.25, radius * 0.25, radius * 0.65);
-      ctx.rect(centerX + radius * 0.2, centerY - radius * 0.25, radius * 0.25, radius * 0.65);
-      ctx.fill();
-      ctx.stroke();
-
-      // Connecting struts
-      ctx.beginPath();
-      ctx.moveTo(centerX - radius * 0.45, centerY); ctx.lineTo(centerX + radius * 0.45, centerY);
-      ctx.moveTo(centerX - radius * 0.15, centerY - radius * 0.3); ctx.lineTo(centerX - radius * 0.45, centerY - radius * 0.25);
-      ctx.moveTo(centerX + radius * 0.15, centerY - radius * 0.3); ctx.lineTo(centerX + radius * 0.45, centerY - radius * 0.25);
-      ctx.stroke();
-
-      // Cockpit nose (Z = front)
-      ctx.fillStyle = '#ffcc00';
-      ctx.beginPath();
-      ctx.moveTo(centerX - radius * 0.15, centerY - radius * 0.6);
-      ctx.lineTo(centerX + radius * 0.15, centerY - radius * 0.6);
-      ctx.lineTo(centerX, centerY - radius * 0.78);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-    }
-    else {
-      // Planets
-      ctx.strokeStyle = '#00f0ff';
-      ctx.lineWidth = 1;
-
-      ctx.beginPath();
-      ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
-      ctx.stroke();
-
-      if (isEarth) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
-        ctx.clip();
-
-        ctx.fillStyle = 'rgba(0, 240, 255, 0.12)';
-        ctx.strokeStyle = 'rgba(0, 240, 255, 0.6)';
-        ctx.lineWidth = 1.2;
-
-        const scrollOffset = (this.globeAngle * radius * 0.4) % (radius * 4);
-
-        ctx.beginPath();
-        ctx.arc(centerX - radius * 1.5 + scrollOffset, centerY - radius * 0.1, radius * 0.45, 0, Math.PI * 2);
-        ctx.fill(); ctx.stroke();
-        
-        ctx.beginPath();
-        ctx.arc(centerX - radius * 0.5 + scrollOffset, centerY + radius * 0.2, radius * 0.32, 0, Math.PI * 2);
-        ctx.fill(); ctx.stroke();
-
-        ctx.beginPath();
-        ctx.arc(centerX - radius * 2.8 + scrollOffset, centerY + radius * 0.15, radius * 0.4, 0, Math.PI * 2);
-        ctx.fill(); ctx.stroke();
-
-        ctx.restore();
-      }
-
-      const latitudeCount = 5;
-      for (let i = 1; i < latitudeCount; i++) {
-        const latFraction = i / latitudeCount;
-        const yOffset = radius * (2 * latFraction - 1);
-        const w = Math.sqrt(radius * radius - yOffset * yOffset);
-        ctx.beginPath();
-        ctx.ellipse(centerX, centerY + yOffset, w, w * 0.15, 0, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-
-      const longitudeCount = 5;
-      for (let i = 0; i < longitudeCount; i++) {
-        const angleOffset = (i / longitudeCount) * Math.PI + this.globeAngle * 0.6;
-        const rx = radius * Math.sin(angleOffset);
-        ctx.beginPath();
-        ctx.ellipse(centerX, centerY, Math.abs(rx), radius, 0, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-
-      if (isSaturn) {
-        ctx.strokeStyle = '#dfc28d';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.ellipse(centerX, centerY, radius * 1.35, radius * 0.35, Math.PI / 12, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.ellipse(centerX, centerY, radius * 1.6, radius * 0.42, Math.PI / 12, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-      else if (isUranus) {
-        ctx.strokeStyle = '#8bb4ff';
-        ctx.lineWidth = 1.2;
-        ctx.beginPath();
-        ctx.ellipse(centerX, centerY, radius * 1.3, radius * 0.2, Math.PI * 0.45, 0, Math.PI * 2);
-        ctx.stroke();
-      }
+    const wire = wireframeFor(target);
+    const rot = new THREE.Matrix4();
+    if (wire.planet) {
+      // The planet turns as it really does, axis tilted; seen from slightly above
+      const spin = target.body ? target.body.mesh.rotation.y : this.globeAngle;
+      rot.makeRotationX(0.32)
+        .multiply(new THREE.Matrix4().makeRotationZ(THREE.MathUtils.degToRad(target.data.tilt || 0)))
+        .multiply(new THREE.Matrix4().makeRotationY(spin));
+    } else {
+      rot.makeRotationX(0.42).multiply(new THREE.Matrix4().makeRotationY(this.globeAngle));
     }
 
-    ctx.strokeStyle = 'rgba(255, 170, 0, 0.7)';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(centerX - 8, centerY);
-    ctx.lineTo(centerX - 3, centerY);
-    ctx.moveTo(centerX + 3, centerY);
-    ctx.lineTo(centerX + 8, centerY);
-    ctx.moveTo(centerX, centerY - 8);
-    ctx.lineTo(centerX, centerY - 3);
-    ctx.moveTo(centerX, centerY + 3);
-    ctx.lineTo(centerX, centerY + 8);
-    ctx.stroke();
+    const R = w * 0.43;
+    const c = w / 2;
+    const v = new THREE.Vector3();
+    const u = new THREE.Vector3();
+    // Three brightness bands by depth: far edges dim, near edges bright
+    const bands = [new Path2D(), new Path2D(), new Path2D()];
+    const seg = wire.segments;
+    for (let i = 0; i < seg.length; i += 6) {
+      v.set(seg[i], seg[i + 1], seg[i + 2]).applyMatrix4(rot);
+      u.set(seg[i + 3], seg[i + 4], seg[i + 5]).applyMatrix4(rot);
+      const z = (v.z + u.z) * 0.5;
+      const band = z > 0.25 ? 2 : z > -0.25 ? 1 : 0;
+      bands[band].moveTo(c + v.x * R, c - v.y * R);
+      bands[band].lineTo(c + u.x * R, c - u.y * R);
+    }
+    ctx.lineWidth = Math.max(1, w / 150);
+    ctx.lineCap = 'round';
+    const color = wire.sun ? '255, 176, 0' : '92, 255, 122';
+    [0.22, 0.5, 0.95].forEach((alpha, i) => {
+      ctx.strokeStyle = `rgba(${color}, ${alpha})`;
+      ctx.stroke(bands[i]);
+    });
   }
 
   clearTargetWireframe() {
@@ -1008,6 +958,17 @@ export class UI {
     const centerX = fWidth / 2;
     const centerY = fHeight / 2;
     const radarRadius = fWidth / 2 - 4;
+
+    // Range rings and cross hair, the same on both scopes
+    [fCtx, rCtx].forEach((ctx) => {
+      ctx.strokeStyle = 'rgba(92, 255, 122, 0.16)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      [0.33, 0.66].forEach((f) => { ctx.moveTo(centerX + radarRadius * f, centerY); ctx.arc(centerX, centerY, radarRadius * f, 0, Math.PI * 2); });
+      ctx.moveTo(centerX - radarRadius, centerY); ctx.lineTo(centerX + radarRadius, centerY);
+      ctx.moveTo(centerX, centerY - radarRadius); ctx.lineTo(centerX, centerY + radarRadius);
+      ctx.stroke();
+    });
 
     const shipDirForward = new THREE.Vector3(0, 0, -1).applyQuaternion(ship.quaternion);
     const shipDirRight = new THREE.Vector3(1, 0, 0).applyQuaternion(ship.quaternion);
@@ -1037,7 +998,7 @@ export class UI {
       const py = centerY - r * Math.cos(angle);
 
       const isTargeted = ship.targetObject && ship.targetObject.name === p.name;
-      const dotColor = p.name === 'Sun' ? '#ffcc00' : isTargeted ? '#ff5500' : '#4cd472';
+      const dotColor = p.name === 'Sun' || isTargeted ? '#ffb000' : '#5cff7a';
 
       if (forwardComp > 0) {
         fCtx.fillStyle = dotColor;
@@ -1085,16 +1046,13 @@ export class UI {
       const px = centerX + r * Math.sin(angle);
       const py = centerY - r * Math.cos(angle);
 
-      // Station blips are cyan stars or square blips
-      const dotColor = '#00f0ff'; 
-      if (forwardComp > 0) {
-        fCtx.fillStyle = dotColor;
-        fCtx.fillRect(px - 2, py - 2, 4, 4); // square dot
-      } else {
-        const mirroredPx = centerX - r * Math.sin(angle);
-        rCtx.fillStyle = dotColor;
-        rCtx.fillRect(mirroredPx - 2, py - 2, 4, 4);
-      }
+      // Hollow square: a station
+      const isTargeted = ship.targetObject === st;
+      const ctx = forwardComp > 0 ? fCtx : rCtx;
+      const x = forwardComp > 0 ? px : centerX - r * Math.sin(angle);
+      ctx.strokeStyle = isTargeted ? '#ffb000' : '#b9ffc6';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(x - 3, py - 3, 6, 6);
     });
   }
 }
