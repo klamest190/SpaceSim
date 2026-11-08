@@ -3,22 +3,36 @@ import * as THREE from 'three';
 import { displayName } from './names';
 import { Tutorial } from './tutorial';
 import { NavMap } from './navMap';
-import { arrivalRadius, gravityRadius } from './spaceship';
+import { arrivalRadius, gravityRadius, stationDockRange } from './spaceship';
+import { StationUI } from './stationUI';
+import { controls } from './controls';
+import { music } from './music';
+import { SUBSYSTEMS } from './world';
+import { DIFFICULTIES, DIFFICULTY_KEYS, difficultyOf } from './difficulty';
 
 const PROMPT_KEYS = {
   travel: ['[X] Hinfliegen', '[T] Nächstes Ziel'],
   hold: ['[W] Heranfliegen', '[S] Zurück', '[X] Loslassen'],
   besideStation: ['[X] Andockposition', '[T] Nächstes Ziel'],
+  combat: ['[R] Nächster Feind', '[Rechtsklick] Rakete', '[K] Täuschkörper'],
 };
+
+const FACTION_LABEL = { pirate: 'ASCHEBUND', police: 'SOLPOL', civil: 'ZIVIL' };
 
 // Game units -> readable distance (arcade scale: 1 unit = 100.000 km)
 // What kind of thing is locked, for the target VDU
-function targetKind(target) {
+function targetKind(target, game) {
+  if (target.kind === 'npc') {
+    const hostile = game.npcs.isHostile(target, game.ship);
+    const bounty = target.faction === 'pirate' && target.bounty ? ` · ${target.bounty.toLocaleString('de-DE')} Cr` : '';
+    return `${FACTION_LABEL[target.faction] || ''} ${target.spec.label.toUpperCase()}${hostile ? ' · FEIND' : ''}${bounty}`;
+  }
+  if (target.kind === 'waypoint') return 'NAVPUNKT';
+  if (target.kind === 'asteroid') return `ASTEROID · ${target.rockKind === 'ice' ? 'EIS' : target.rockKind === 'ore' ? 'ERZ' : 'GESTEIN'}`;
   if (target.name === 'Sun') return 'STERN';
-  if (target.group && target.radius) return 'PLANET';
-  if (target.name.startsWith('ASTEROID')) return 'ASTEROID';
-  if (target.name.includes('HÄNDLER')) return 'FRACHTER';
-  return 'STATION';
+  if (target.group && target.radius) return target.parent ? `MOND · ${displayName(target.parent.name).toUpperCase()}` : 'PLANET';
+  if (target.kind === 'station') return target.def.faction === 'pirate' ? 'PIRATENBASIS' : target.def.blackMarket ? 'STATION · SCHWARZMARKT' : 'STATION';
+  return '---';
 }
 
 const WIRE_SEGMENT_LIMIT = 2400;
@@ -159,58 +173,29 @@ export class UI {
     this.hudCredits = document.getElementById('hud-credits');
     this.hudCargo = document.getElementById('hud-cargo');
     
-    // Spaceport Terminal UI
-    this.spaceportScreen = document.getElementById('spaceport-screen');
-    this.stationTitle = document.getElementById('terminal-station-title');
-    this.terminalCredits = document.getElementById('terminal-credits-val');
-    
-    this.tabMarket = document.getElementById('tab-btn-market');
-    this.tabHangar = document.getElementById('tab-btn-hangar');
-    this.exitTerminalBtn = document.getElementById('exit-terminal-btn');
-    
-    this.marketContent = document.getElementById('market-tab-content');
-    this.hangarContent = document.getElementById('hangar-tab-content');
-    this.marketCargoVal = document.getElementById('market-cargo-val');
-    
-    // Market commodities elements
-    this.invIce = document.getElementById('inv-ice');
-    this.invOre = document.getElementById('inv-ore');
-    this.invTech = document.getElementById('inv-tech');
-    this.buyIceBtn = document.getElementById('buy-ice-btn');
-    this.sellIceBtn = document.getElementById('sell-ice-btn');
-    this.buyOreBtn = document.getElementById('buy-ore-btn');
-    this.sellOreBtn = document.getElementById('sell-ore-btn');
-    this.buyTechBtn = document.getElementById('buy-tech-btn');
-    this.sellTechBtn = document.getElementById('sell-tech-btn');
+    this.hullVal = document.getElementById('hull-val');
+    this.fuelVal = document.getElementById('fuel-val');
+    this.missileVal = document.getElementById('missile-val');
+    this.flareVal = document.getElementById('flare-val');
+    this.boostBar = document.getElementById('boost-bar');
+    this.sysLamps = {};
+    document.querySelectorAll('#sys-lamps [data-sys]').forEach((el) => { this.sysLamps[el.dataset.sys] = el; });
+    this.targetBars = document.getElementById('target-bars');
+    this.targetShieldBar = document.getElementById('target-shield-bar');
+    this.targetHullBar = document.getElementById('target-hull-bar');
+    this.extHull = document.getElementById('ext-hull');
 
-    this.priceIceBuy = document.getElementById('price-ice-buy');
-    this.priceIceSell = document.getElementById('price-ice-sell');
-    this.priceOreBuy = document.getElementById('price-ore-buy');
-    this.priceOreSell = document.getElementById('price-ore-sell');
-    this.priceTechBuy = document.getElementById('price-tech-buy');
-    this.priceTechSell = document.getElementById('price-tech-sell');
-    
-    // Hangar Upgrades elements
-    this.lvlEngine = document.getElementById('upgrade-lvl-engine');
-    this.lvlShield = document.getElementById('upgrade-lvl-shield');
-    this.lvlWeapon = document.getElementById('upgrade-lvl-weapon');
-    this.lvlCargo = document.getElementById('upgrade-lvl-cargo');
-    this.btnUpgradeEngine = document.getElementById('upgrade-engine-btn');
-    this.btnUpgradeShield = document.getElementById('upgrade-shield-btn');
-    this.btnUpgradeWeapon = document.getElementById('upgrade-weapon-btn');
-    this.btnUpgradeCargo = document.getElementById('upgrade-cargo-btn');
-    
     // Canvases
     this.targetCanvas = document.getElementById('target-wireframe-canvas');
     this.targetCtx = this.targetCanvas.getContext('2d');
-    
     this.radarFrontCanvas = document.getElementById('radar-front-canvas');
     this.radarFrontCtx = this.radarFrontCanvas.getContext('2d');
     this.radarRearCanvas = document.getElementById('radar-rear-canvas');
     this.radarRearCtx = this.radarRearCanvas.getContext('2d');
-    
-    // Rotation details
-    this.globeAngle = 0;
+
+    this.stationUI = new StationUI(game);
+    this.pauseScreen = document.getElementById('pause-screen');
+    this.pauseOpen = false;
 
     // Target closing-speed tracking
     this.lastRelTarget = null;
@@ -218,20 +203,7 @@ export class UI {
     this.lastRelTime = 0;
     this.relSpeed = 0;
     this.currentStationDocked = null;
-    
-    // Dynamic Station commodity prices
-    this.stationPrices = {
-      'Erde Orbital-Station': {
-        ice: { buy: 15, sell: 10 },
-        ore: { buy: 35, sell: 26 }, // Earth buys Ore for high prices
-        tech: { buy: 110, sell: 90 } // sells Tech cheap
-      },
-      'Mars Außenposten': {
-        ice: { buy: 35, sell: 28 }, // Mars needs Ice, buys high
-        ore: { buy: 18, sell: 12 }, // sells Ore cheap
-        tech: { buy: 180, sell: 150 } // Tech is expensive on Mars
-      }
-    };
+    this.globeAngle = 0;
 
     this.passiveContainer = document.getElementById('passive-markers-container');
     this.createPassiveMarkers();
@@ -269,12 +241,13 @@ export class UI {
     }
   }
 
-  launch(newCareer) {
-    if (newCareer) this.game.startNewCareer();
+  launch(newCareer, difficulty = 'normal') {
+    if (newCareer) this.game.startNewCareer(difficulty);
     const tutorialDone = !newCareer && !!(this.game.savedGame && this.game.savedGame.tutorialDone);
     this.startScreen.classList.add('hidden');
     this.hud.classList.remove('hidden');
     spaceAudio.init();
+    spaceAudio.setMute(this.game.settings.sound === false);
     this.game.startSimulation();
     this.updateHUDStats();
     this.tutorial.start(tutorialDone);
@@ -282,8 +255,19 @@ export class UI {
 
   setupListeners() {
     // Launch mission
-    this.launchBtn.addEventListener('click', () => this.launch(false));
-    this.newCareerBtn.addEventListener('click', () => this.launch(true));
+    // Without a career to continue, the first start asks for a difficulty too
+    this.launchBtn.addEventListener('click', () => (this.game.savedGame ? this.launch(false) : this.openDifficulty('start')));
+    this.newCareerBtn.addEventListener('click', () => this.openDifficulty('start'));
+
+    // Difficulty picker
+    this.difficultyScreen = document.getElementById('difficulty-screen');
+    this.difficultyOpen = false;
+    document.getElementById('difficulty-cancel').addEventListener('click', () => this.closeDifficulty());
+    document.getElementById('difficulty-cards').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-diff]');
+      if (b) this.chooseDifficulty(b.dataset.diff);
+    });
+    document.getElementById('new-game-btn').addEventListener('click', () => this.openDifficulty('pause'));
 
     // Flight Assist
     this.btnFa.addEventListener('click', () => {
@@ -305,61 +289,126 @@ export class UI {
       this.toggleHelpGuide();
     });
 
-    // Spaceport tab toggles
-    this.tabMarket.addEventListener('click', () => {
-      this.tabMarket.classList.add('active');
-      this.tabHangar.classList.remove('active');
-      this.marketContent.classList.remove('hidden');
-      this.hangarContent.classList.add('hidden');
+    // Pause / logbook
+    document.getElementById('resume-btn').addEventListener('click', () => this.closePause());
+    const s = this.game.settings;
+    const sens = document.getElementById('set-sens');
+    const sensVal = document.getElementById('set-sens-val');
+    const invert = document.getElementById('set-invert');
+    const sound = document.getElementById('set-sound');
+    const musicBox = document.getElementById('set-music');
+    const musicVol = document.getElementById('set-music-vol');
+    sens.value = s.sensitivity;
+    sensVal.textContent = Number(s.sensitivity).toFixed(2);
+    invert.checked = s.invertY;
+    sound.checked = s.sound !== false;
+    musicBox.checked = s.music;
+    musicVol.value = s.musicVolume;
+    sens.addEventListener('input', () => { s.sensitivity = Number(sens.value); sensVal.textContent = s.sensitivity.toFixed(2); this.game.applySettings(); });
+    invert.addEventListener('change', () => { s.invertY = invert.checked; this.game.applySettings(); });
+    sound.addEventListener('change', () => { s.sound = sound.checked; spaceAudio.setMute(!s.sound); this.game.applySettings(); });
+    musicBox.addEventListener('change', () => { s.music = musicBox.checked; this.game.applySettings(); });
+    musicVol.addEventListener('input', () => { s.musicVolume = Number(musicVol.value); this.game.applySettings(); });
+    this.pauseScreen.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-pact]');
+      if (!b) return;
+      const [act, id] = b.dataset.pact.split(':');
+      const m = this.game.missions.active.find((x) => String(x.id) === id);
+      if (!m) return;
+      if (act === 'track') {
+        this.game.missions.tracked = m;
+        const dest = this.game.missions.destination(m);
+        if (dest) this.game.setTarget(dest);
+      }
+      if (act === 'abort') this.game.missions.abort(m);
       spaceAudio.playBeep();
+      this.renderPause();
     });
+  }
 
-    this.tabHangar.addEventListener('click', () => {
-      this.tabHangar.classList.add('active');
-      this.tabMarket.classList.remove('active');
-      this.hangarContent.classList.remove('hidden');
-      this.marketContent.classList.add('hidden');
-      spaceAudio.playBeep();
-    });
+  // from: 'start' (start screen) or 'pause' (a running game, which will be replaced)
+  openDifficulty(from) {
+    this.difficultyFrom = from;
+    const current = this.game.difficulty;
+    document.getElementById('difficulty-warning').classList.toggle('hidden', !(from === 'pause' || this.game.savedGame));
+    document.getElementById('difficulty-cards').innerHTML = DIFFICULTY_KEYS.map((key, i) => {
+      const d = DIFFICULTIES[key];
+      return `<div class="difficulty-card ${key}">
+        <h3>${d.label}${from === 'pause' && key === current ? ' <small>aktuell</small>' : ''}</h3>
+        <p class="tagline">${d.tagline}</p>
+        <ul>${d.perks.map((p) => `<li>${p}</li>`).join('')}</ul>
+        <button class="metal-btn ${key === 'normal' ? 'primary' : ''}" data-diff="${key}">${d.label} wählen [${i + 1}]</button>
+      </div>`;
+    }).join('');
+    this.difficultyScreen.classList.remove('hidden');
+    this.difficultyOpen = true;
+    spaceAudio.playBeep();
+  }
 
-    // Exit Station Docking
-    this.exitTerminalBtn.addEventListener('click', () => {
-      this.game.undockShip();
-    });
+  closeDifficulty() {
+    this.difficultyScreen.classList.add('hidden');
+    this.difficultyOpen = false;
+  }
 
-    // Commodities actions listeners
-    this.buyIceBtn.addEventListener('click', () => this.tradeCommodity('ice', 'buy'));
-    this.sellIceBtn.addEventListener('click', () => this.tradeCommodity('ice', 'sell'));
-    this.buyOreBtn.addEventListener('click', () => this.tradeCommodity('ore', 'buy'));
-    this.sellOreBtn.addEventListener('click', () => this.tradeCommodity('ore', 'sell'));
-    this.buyTechBtn.addEventListener('click', () => this.tradeCommodity('tech', 'buy'));
-    this.sellTechBtn.addEventListener('click', () => this.tradeCommodity('tech', 'sell'));
+  chooseDifficulty(key) {
+    if (!DIFFICULTIES[key]) return;
+    this.closeDifficulty();
+    spaceAudio.playBeep();
+    if (this.difficultyFrom === 'pause') {
+      this.game.newGame(key);
+      this.closePause();
+    } else {
+      this.launch(true, key);
+    }
+  }
 
-    // Hangar upgrade triggers
-    this.btnUpgradeEngine.addEventListener('click', () => this.purchaseUpgrade('engine'));
-    this.btnUpgradeShield.addEventListener('click', () => this.purchaseUpgrade('shield'));
-    this.btnUpgradeWeapon.addEventListener('click', () => this.purchaseUpgrade('weapon'));
-    this.btnUpgradeCargo.addEventListener('click', () => this.purchaseUpgrade('cargo'));
+  openPause() {
+    if (this.pauseOpen) return;
+    this.pauseOpen = true;
+    this.game.paused = true;
+    this.renderPause();
+    this.pauseScreen.classList.remove('hidden');
+    document.exitPointerLock();
+    spaceAudio.playBeep();
+  }
+
+  closePause() {
+    if (!this.pauseOpen) return;
+    this.pauseOpen = false;
+    this.game.paused = false;
+    this.game.clock.getDelta();
+    this.pauseScreen.classList.add('hidden');
+    controls.requestLock();
+  }
+
+  renderPause() {
+    const { law, ship, missions } = this.game;
+    const fmt = (n) => Math.round(n).toLocaleString('de-DE');
+    const rank = law.rank();
+    const next = law.nextRank();
+    const bar = (v) => `<span class="rep-bar"><i style="left:${50 + v / 2}%"></i></span>`;
+    document.getElementById('pause-record').innerHTML = `<h3 class="section">Pilot</h3>
+      <p>Rang <b>${rank.name}</b>${next ? ` <span class="dim">(${law.points} / ${next.points} bis ${next.name})</span>` : ''}</p>
+      <p>Schwierigkeit <b>${difficultyOf(this.game).label}</b></p>
+      <p>Konto <b>${fmt(ship.credits)} Cr</b> · Schulden <b>${fmt(ship.debt)} Cr</b></p>
+      <p>Status <b class="${law.wanted >= 2 ? 'alarm' : ''}">${law.wantedLabel()}</b>${law.fines ? ` · Bußgeld ${fmt(law.fines)} Cr` : ''}</p>
+      <p>SOLPOL ${bar(law.rep.police)} ${law.repText(law.rep.police)}</p>
+      <p>Aschebund ${bar(law.rep.pirate)} ${law.repText(law.rep.pirate)}</p>
+      <p class="dim">Abschüsse: ${law.kills.pirate} Piraten · ${law.kills.police} Polizei · ${law.kills.civil} Zivil</p>
+      <p class="dim">Hülle ${Math.round((ship.hull / ship.maxHull) * 100)}% · ${Object.entries(ship.systems).map(([k, c]) => `${SUBSYSTEMS[k]} ${Math.round(c * 100)}%`).join(' · ')}</p>`;
+    const list = missions.active.map((m) => {
+      const obj = missions.current(m);
+      return `<div class="mission-active ${missions.tracked === m ? 'tracked' : ''}"><span><b>${m.title}</b><br>${obj ? obj.label : ''} · ${fmt(m.reward)} Cr</span>
+        <span><button class="shop-action-btn" data-pact="track:${m.id}">Verfolgen</button><button class="shop-action-btn sell" data-pact="abort:${m.id}">Abbrechen</button></span></div>`;
+    }).join('') || '<p class="dim">Keine Aufträge. Angebote gibt es im Auftragsbüro jeder Station, manchmal auch in der Bar.</p>';
+    document.getElementById('pause-missions').innerHTML = `<h3 class="section">Aufträge</h3>${list}`;
   }
 
   createPassiveMarkers() {
     this.passiveMarkers = [];
     if (!this.passiveContainer) return;
-    
-    // Create for planets
-    this.game.solarSystem.planets.forEach(p => {
-      this.createMarkerElement(p, 'planet');
-    });
-    
-    // Create for stations
-    this.game.solarSystem.stations.forEach(st => {
-      this.createMarkerElement(st, 'station');
-    });
-
-    // Create for trade ships
-    this.game.solarSystem.tradeShips.forEach(ts => {
-      this.createMarkerElement(ts, 'ship');
-    });
+    this.game.solarSystem.planets.forEach(p => this.createMarkerElement(p, 'planet'));
+    this.game.solarSystem.stations.forEach(st => this.createMarkerElement(st, 'station'));
   }
 
   createMarkerElement(obj, type) {
@@ -400,131 +449,15 @@ export class UI {
     spaceAudio.playBeep();
   }
 
-  // Engage docking overlay
+  // Docked: walking through the station
   openSpaceport(stationName) {
     this.currentStationDocked = stationName;
-    this.stationTitle.innerText = stationName.toUpperCase();
-    
-    // Default to Market tab on open
-    this.tabMarket.click();
-    this.updateSpaceportUI();
-    
-    this.spaceportScreen.classList.remove('hidden');
+    this.stationUI.open(stationName);
   }
 
   closeSpaceport() {
-    this.spaceportScreen.classList.add('hidden');
+    this.stationUI.close();
     this.currentStationDocked = null;
-  }
-
-  updateSpaceportUI() {
-    const ship = this.game.ship;
-    const prices = this.stationPrices[this.currentStationDocked];
-    if (!prices) return;
-
-    // Update credits and cargo capacity metrics
-    this.terminalCredits.innerText = Math.round(ship.credits).toLocaleString('de-DE');
-    const currentWeight = ship.getCurrentCargoWeight();
-    this.marketCargoVal.innerText = `${currentWeight} / ${ship.maxCargo}`;
-
-    // Fill prices in marketplace table
-    this.priceIceBuy.innerText = prices.ice.buy;
-    this.priceIceSell.innerText = prices.ice.sell;
-    this.priceOreBuy.innerText = prices.ore.buy;
-    this.priceOreSell.innerText = prices.ore.sell;
-    this.priceTechBuy.innerText = prices.tech.buy;
-    this.priceTechSell.innerText = prices.tech.sell;
-
-    // Fill cargo item levels
-    this.invIce.innerText = ship.cargo.ice;
-    this.invOre.innerText = ship.cargo.ore;
-    this.invTech.innerText = ship.cargo.tech;
-
-    // Update upgrade hangar button texts and level tiers
-    const updateHangarCard = (type, lvlSpan, btn, baseCost) => {
-      const tier = ship.upgrades[type];
-      lvlSpan.innerText = tier;
-      if (tier >= 4) {
-        btn.innerText = "HÖCHSTE STUFE";
-        btn.disabled = true;
-        btn.style.opacity = 0.5;
-      } else {
-        const cost = tier * baseCost;
-        btn.innerText = `AUSBAUEN (${cost} Cr)`;
-        btn.disabled = false;
-        btn.style.opacity = 1.0;
-      }
-    };
-
-    updateHangarCard('engine', this.lvlEngine, this.btnUpgradeEngine, 250);
-    updateHangarCard('shield', this.lvlShield, this.btnUpgradeShield, 300);
-    updateHangarCard('weapon', this.lvlWeapon, this.btnUpgradeWeapon, 350);
-    updateHangarCard('cargo', this.lvlCargo, this.btnUpgradeCargo, 150);
-  }
-
-  // Handle cargo transaction
-  tradeCommodity(commodity, type) {
-    const ship = this.game.ship;
-    const prices = this.stationPrices[this.currentStationDocked];
-    if (!prices) return;
-
-    const price = prices[commodity][type];
-    const currentWeight = ship.getCurrentCargoWeight();
-
-    if (type === 'buy') {
-      // Check credits & cargo space
-      if (ship.credits >= price && currentWeight < ship.maxCargo) {
-        ship.credits -= price;
-        ship.cargo[commodity]++;
-        spaceAudio.playBeep();
-      } else {
-        spaceAudio.playAutopilotAlert(false); // error buzzer
-      }
-    } else {
-      // sell
-      if (ship.cargo[commodity] > 0) {
-        ship.credits += price;
-        ship.cargo[commodity]--;
-        spaceAudio.playBeep();
-      } else {
-        spaceAudio.playAutopilotAlert(false);
-      }
-    }
-
-    this.updateSpaceportUI();
-    this.updateHUDStats();
-    this.game.saveProgress();
-  }
-
-  // Purchase spaceship component upgrade
-  purchaseUpgrade(type) {
-    const ship = this.game.ship;
-    const tier = ship.upgrades[type];
-    if (tier >= 4) return;
-
-    let baseCost = 200;
-    if (type === 'engine') baseCost = 250;
-    else if (type === 'shield') baseCost = 300;
-    else if (type === 'weapon') baseCost = 350;
-    else if (type === 'cargo') baseCost = 150;
-
-    const cost = tier * baseCost;
-
-    if (ship.credits >= cost) {
-      ship.credits -= cost;
-      ship.upgrades[type]++;
-      
-      // Re-initialize ship upgrade parameters
-      ship.applyUpgrades();
-      
-      spaceAudio.playBeep();
-    } else {
-      spaceAudio.playAutopilotAlert(false); // error beep
-    }
-
-    this.updateSpaceportUI();
-    this.updateHUDStats();
-    this.game.saveProgress();
   }
 
   updateHUDStats() {
@@ -535,39 +468,29 @@ export class UI {
 
   update(ship, solarSystem, camera) {
     const external = ship.cameraMode !== 'cockpit';
+    // In atmospheric flight the camera films a local scene: nothing in space can be marked on screen
+    const surface = this.game.surface && this.game.surface.active ? this.game.surface : null;
     this.hud.classList.toggle('view-external', external);
     if (!external) {
       this.swingCockpit(ship, camera);
       this.lightCockpit(ship, solarSystem);
     }
 
-    // Update passive target indicators (Privateer Style)
+    // Passive destination markers (planets, stations)
     if (this.passiveMarkers) {
       this.passiveMarkers.forEach(pm => {
-        // 1. Hide if active target
-        if (ship.targetObject === pm.object) {
+        const far = pm.type === 'station' && pm.object.mesh.position.distanceTo(ship.position) > 6000;
+        if (ship.targetObject === pm.object || pm.object.hidden || far || surface) {
           pm.element.classList.add('hidden');
           return;
         }
-        
-        const targetPos = new THREE.Vector3();
-        if (pm.type === 'station' || pm.type === 'ship') {
-          targetPos.copy(pm.object.mesh.position);
-        } else {
-          targetPos.copy(pm.object.group.position);
-        }
-        
+        const targetPos = (pm.type === 'station' ? pm.object.mesh.position : pm.object.group.position).clone();
         targetPos.project(camera);
-        
-        // Hide if behind camera (z > 1) or way off screen
         if (targetPos.z > 1 || Math.abs(targetPos.x) > 1.1 || Math.abs(targetPos.y) > 1.1) {
           pm.element.classList.add('hidden');
         } else {
-          const x = (targetPos.x * 0.5 + 0.5) * window.innerWidth;
-          const y = (targetPos.y * -0.5 + 0.5) * window.innerHeight;
-          
-          pm.element.style.left = `${x}px`;
-          pm.element.style.top = `${y}px`;
+          pm.element.style.left = `${(targetPos.x * 0.5 + 0.5) * window.innerWidth}px`;
+          pm.element.style.top = `${(targetPos.y * -0.5 + 0.5) * window.innerHeight}px`;
           pm.element.classList.remove('hidden');
         }
       });
@@ -584,10 +507,26 @@ export class UI {
       this.btnAutopilot.className = "metal-btn autopilot-btn";
     }
 
-    // 2. Weapons Energy
+    // 2. Weapons, afterburner, fuel, ordnance, hull, subsystems
     const wEnergy = Math.round(ship.weaponEnergy);
     this.weaponEnergyBar.style.width = `${wEnergy}%`;
     this.weaponEnergyVal.innerText = wEnergy;
+    this.boostBar.style.width = `${Math.round(ship.boost)}%`;
+    this.boostBar.classList.toggle('burning', ship.boosting);
+    this.fuelVal.textContent = Math.round(ship.fuel);
+    this.missileVal.textContent = ship.missiles;
+    this.flareVal.textContent = ship.flares;
+    const hullPct = Math.max(0, Math.round((ship.hull / ship.maxHull) * 100));
+    this.hullVal.textContent = `${hullPct}%`;
+    this.hullVal.classList.toggle('alarm-text', hullPct < 35);
+    Object.entries(this.sysLamps).forEach(([k, el]) => {
+      const c = ship.systems[k];
+      const state = c < 0.35 ? 'bad' : c < 0.75 ? 'warn' : '';
+      if (el.dataset.state !== state) {
+        el.dataset.state = state;
+        el.className = state;
+      }
+    });
 
     // 3. Status controls styling
     this.btnFa.innerText = `STABILISATOR [F]: ${ship.flightAssist ? 'AN' : 'AUS'}`;
@@ -606,7 +545,7 @@ export class UI {
     }
 
     // 4. Set Speed & Actual Speed meters
-    const currentSpeed = ship.velocity.length();
+    const currentSpeed = ship.isWarping ? ship.velocity.length() : ship.isHolding() ? 0 : ship.velocity.clone().sub(ship.frameVelocity).length();
     const setSpeedPercent = Math.round(ship.throttle * 100);
     this.setSpeedBar.style.height = `${Math.abs(setSpeedPercent)}%`;
     this.setSpeedBar.classList.toggle('reverse', setSpeedPercent < 0); // red column for reverse thrust
@@ -614,7 +553,10 @@ export class UI {
 
     let displaySpeed = "";
     let speedProgress = 0;
-    if (ship.autopilotActive && !ship.isHolding()) {
+    if (surface) {
+      displaySpeed = surface.speedText();
+      speedProgress = Math.min(100, surface.speedFraction() * 100);
+    } else if (ship.autopilotActive && !ship.isHolding()) {
       const speedOfLight = 300;
       const cFactor = (currentSpeed / speedOfLight).toFixed(1);
       displaySpeed = `WARP ${cFactor} c`;
@@ -635,7 +577,6 @@ export class UI {
     const target = ship.targetObject;
     if (target) {
       this.targetName.innerText = displayName(target.name).toUpperCase();
-      
       const targetPos = target.group ? target.group.position : target.mesh.position;
       this.targetDist.innerText = formatDist(targetPos.distanceTo(ship.position));
 
@@ -654,17 +595,25 @@ export class UI {
       this.lastRelTarget = target;
       this.lastRelPos.copy(relPos);
       this.lastRelTime = now;
-      const relativeSpeedKmS = (this.relSpeed * 1000).toFixed(0);
-      this.targetSpeed.innerText = `${Number(relativeSpeedKmS).toLocaleString('de-DE')} km/s`;
+      this.targetSpeed.innerText = `${Number((this.relSpeed * 1000).toFixed(0)).toLocaleString('de-DE')} km/s`;
 
-      this.targetKind.textContent = targetKind(target);
+      this.targetKind.textContent = targetKind(target, this.game);
+      if (target.kind === 'npc') {
+        this.targetBars.classList.remove('hidden');
+        this.targetShieldBar.style.width = `${Math.max(0, (target.shield / Math.max(target.maxShield, 1)) * 100).toFixed(0)}%`;
+        this.targetHullBar.style.width = `${Math.max(0, (target.hull / target.maxHull) * 100).toFixed(0)}%`;
+      } else {
+        this.targetBars.classList.add('hidden');
+      }
       this.drawTargetWireframe(target);
-      this.updateTargetReticle(target, camera);
+      if (surface) this.targetReticle.classList.add('hidden');
+      else this.updateTargetReticle(target, camera);
     } else {
       this.targetName.innerText = "KEINES";
       this.targetDist.innerText = "---";
       this.targetSpeed.innerText = "---";
       this.targetKind.textContent = '---';
+      this.targetBars.classList.add('hidden');
       this.targetReticle.classList.add('hidden');
       this.clearTargetWireframe();
     }
@@ -683,8 +632,13 @@ export class UI {
 
     // 10. Gravity and atmosphere warnings, and the altimeter near a planet
     const touchingAtmosphere = ship.atmosphereContact > 0;
-    this.gravityAlertText.textContent = touchingAtmosphere ? 'MINDESTHÖHE' : 'SCHWEREFELD';
-    this.gravityAlert.classList.toggle('hidden', !(touchingAtmosphere || (external && ship.gravityFieldActive)));
+    if (surface) {
+      this.gravityAlertText.textContent = 'BODEN · HOCHZIEHEN';
+      this.gravityAlert.classList.toggle('hidden', surface.warning !== 'pull-up');
+    } else {
+      this.gravityAlertText.textContent = touchingAtmosphere ? 'MINDESTHÖHE' : 'SCHWEREFELD';
+      this.gravityAlert.classList.toggle('hidden', !(touchingAtmosphere || (external && ship.gravityFieldActive)));
+    }
     this.updateAnnunciator(ship);
     this.updateAltimeter(ship, solarSystem);
 
@@ -693,11 +647,13 @@ export class UI {
       this.extThrottle.textContent = this.setSpeedVal.textContent;
       this.extSpeed.textContent = displaySpeed;
       this.extShield.textContent = `${Math.round((ship.shield / ship.maxShield) * 100)}%`;
+      this.extHull.textContent = `${hullPct}%`;
       this.extTarget.textContent = target
         ? `${displayName(target.name).toUpperCase()} · ${this.targetDist.textContent}`
         : 'KEINES';
       this.extAutopilot.textContent = this.autopilotStatus.textContent.replace('AUTOPILOT: ', '');
-      this.updateExternalAim(ship, camera);
+      if (surface) this.extAim.classList.add('hidden');
+      else this.updateExternalAim(ship, camera);
     } else {
       this.extAim.classList.add('hidden');
     }
@@ -768,6 +724,14 @@ export class UI {
 
   // Height over the nearest planet's surface, in that planet's own kilometres (Earth's floor is about 100 km)
   updateAltimeter(ship, solarSystem) {
+    const surface = this.game.surface;
+    if (surface && surface.active) {
+      this.altimeter.classList.toggle('hidden', ship.isDestroyed);
+      this.altimeterValue.textContent = surface.altitudeText();
+      this.altimeter.classList.toggle('alarm-text', surface.warning === 'pull-up');
+      return;
+    }
+    this.altimeter.classList.remove('alarm-text');
     let nearest = null;
     let nearestAltitude = Infinity;
     solarSystem.planets.forEach(p => {
@@ -798,16 +762,18 @@ export class UI {
     this.extAim.classList.remove('hidden');
   }
 
-  // Shield arcs around the ship plan, coloured by charge
+  // Shield arcs around the ship plan, one per side, coloured by that side's charge
   updateShieldsGlow(ship) {
-    const shieldPct = ship.shield / ship.maxShield;
-    const color = shieldPct > 0.6 ? '#5cff7a' : shieldPct > 0.3 ? '#ffb000' : '#ff3b2f';
-    [this.shieldF, this.shieldB, this.shieldL, this.shieldR].forEach((arc) => {
+    const quarter = ship.maxShield / 4;
+    const arcs = { f: this.shieldF, b: this.shieldB, l: this.shieldL, r: this.shieldR };
+    Object.entries(arcs).forEach(([side, arc]) => {
+      const pct = ship.shields[side] / quarter;
+      const color = pct > 0.6 ? '#5cff7a' : pct > 0.3 ? '#ffb000' : '#ff3b2f';
       arc.style.stroke = color;
       arc.style.filter = `drop-shadow(0 0 2px ${color})`;
-      arc.style.opacity = 0.25 + shieldPct * 0.75;
+      arc.style.opacity = pct < 0.02 ? 0.08 : 0.25 + pct * 0.75;
     });
-    this.shieldVal.textContent = `${Math.round(shieldPct * 100)}%`;
+    this.shieldVal.textContent = `${Math.round((ship.shield / ship.maxShield) * 100)}%`;
   }
 
   // Backlit lamps on the binnacle: each one is a condition the pilot should know about
@@ -819,13 +785,21 @@ export class UI {
       el.className = state ? `lamp ${state}` : 'lamp';
     };
     const shieldPct = ship.shield / ship.maxShield;
+    const hullPct = ship.hull / ship.maxHull;
+    const { law, encounters } = this.game;
     set('stabil', ship.flightAssist ? 'on' : '');
     set('auto', ship.autopilotActive ? 'warn' : '');
     set('halten', ship.autopilotActive && ship.isHolding() ? 'on' : '');
     set('andock', this.game.dockableStation && !ship.isDocked ? 'on' : '');
-    set('schwere', ship.gravityFieldActive ? 'warn' : '');
+    set('schwere', ship.gravityFieldActive ? 'warn' : ship.atmosphereContact > 0 ? 'alarm' : '');
     set('hoehe', ship.atmosphereContact > 0 ? 'alarm' : '');
     set('schild', shieldPct < 0.3 ? 'alarm' : shieldPct < 0.6 ? 'warn' : '');
+    set('huelle', hullPct < 0.35 ? 'alarm' : hullPct < 0.75 ? 'warn' : '');
+    set('rakete', ship.incomingMissiles > 0 ? 'alarm' : ship.locked ? 'on' : '');
+    this.lockedOut = this.lockedOut === undefined ? false : this.lockedOut;
+    if ((this.annunciatorTick = (this.annunciatorTick || 0) + 1) % 10 === 0) this.lockedOut = encounters.massLocked();
+    set('sperre', this.lockedOut ? 'warn' : '');
+    set('fahndung', law.wanted >= 2 ? 'alarm' : law.wanted === 1 ? 'warn' : '');
     set('fracht', ship.getCurrentCargoWeight() >= ship.maxCargo ? 'warn' : '');
   }
 
@@ -833,9 +807,12 @@ export class UI {
   // right beside a station, how to take up the hold again
   updateTravelPrompt(ship, target) {
     let keys = null;
-    if (target && !ship.isDocked && !ship.isDestroyed && !this.game.warpState && !this.navMap.isOpen) {
-      const targetPos = target.group ? target.group.position : target.mesh.position;
-      if (ship.stationHold) keys = PROMPT_KEYS.hold;
+    if (!ship.isDocked && !ship.isDestroyed && !this.game.warpState && !this.navMap.isOpen && !(this.game.surface && this.game.surface.active)) {
+      const fighting = target && target.kind === 'npc' && this.game.npcs.isHostile(target, ship);
+      const targetPos = target ? (target.group ? target.group.position : target.mesh.position) : null;
+      if (fighting) keys = PROMPT_KEYS.combat;
+      else if (!target) keys = null;
+      else if (ship.stationHold) keys = PROMPT_KEYS.hold;
       else if (ship.autopilotActive) keys = null; // still closing in on the hold point
       else if (this.game.isBesideTargetStation()) keys = PROMPT_KEYS.besideStation;
       else if (targetPos.distanceTo(ship.position) >= arrivalRadius(target)) keys = PROMPT_KEYS.travel;
@@ -850,21 +827,19 @@ export class UI {
   }
 
   checkDockingPrompts(ship, solarSystem) {
-    let canDock = false;
     let closestStation = null;
-    const dockRange = 2.5; // units distance
-
     solarSystem.stations.forEach(st => {
-      const dist = ship.position.distanceTo(st.mesh.position);
-      if (dist < dockRange) {
-        canDock = true;
-        closestStation = st;
-      }
+      if (st.hidden) return;
+      if (ship.position.distanceTo(st.mesh.position) < stationDockRange(st)) closestStation = st;
     });
-
-    if (canDock && !ship.isDocked) {
+    if (closestStation && !ship.isDocked && !ship.isWarping) {
       this.dockPrompt.classList.remove('hidden');
-      this.dockPrompt.innerHTML = `<span>[G] ANDOCKEN: ${displayName(closestStation.name).toUpperCase()}</span>`;
+      const refusal = this.game.dockRefusal(closestStation);
+      const text = `[G] ANDOCKEN: ${displayName(closestStation.name).toUpperCase()}${refusal ? ' · VERWEIGERT' : ''}`;
+      if (this.dockPrompt.dataset.text !== text) {
+        this.dockPrompt.dataset.text = text;
+        this.dockPrompt.innerHTML = `<span>${text}</span>`;
+      }
       this.game.dockableStation = closestStation;
     } else {
       this.dockPrompt.classList.add('hidden');
@@ -935,7 +910,12 @@ export class UI {
     }
     ctx.lineWidth = Math.max(1, w / 150);
     ctx.lineCap = 'round';
-    const color = wire.sun ? '255, 176, 0' : '92, 255, 122';
+    const hostile = target.kind === 'npc' && this.game.npcs.isHostile(target, this.game.ship);
+    const color = hostile ? '255, 80, 60' : target.kind === 'npc' && target.faction === 'police' ? '120, 180, 255' : wire.sun ? '255, 176, 0' : '92, 255, 122';
+    // Damaged sensors: the picture jumps and tears
+    if (this.game.ship.systems.sensors < 0.5 && Math.random() > this.game.ship.systems.sensors * 1.6) {
+      ctx.translate((Math.random() - 0.5) * w * 0.08, 0);
+    }
     [0.22, 0.5, 0.95].forEach((alpha, i) => {
       ctx.strokeStyle = `rgba(${color}, ${alpha})`;
       ctx.stroke(bands[i]);
@@ -946,113 +926,119 @@ export class UI {
     this.targetCtx.clearRect(0, 0, this.targetCanvas.width, this.targetCanvas.height);
   }
 
+  // Two scopes, front and rear hemisphere. A blip's distance from the centre is how far it is off the nose
+  // (or the tail), its direction which way to turn: steer onto a blip and it moves to the middle.
   drawDualRadar(ship, solarSystem) {
     const fWidth = this.radarFrontCanvas.width;
     const fHeight = this.radarFrontCanvas.height;
     const fCtx = this.radarFrontCtx;
     const rCtx = this.radarRearCtx;
-
+    fCtx.setTransform(1, 0, 0, 1, 0, 0);
+    rCtx.setTransform(1, 0, 0, 1, 0, 0);
     fCtx.clearRect(0, 0, fWidth, fHeight);
     rCtx.clearRect(0, 0, fWidth, fHeight);
 
-    const centerX = fWidth / 2;
-    const centerY = fHeight / 2;
-    const radarRadius = fWidth / 2 - 4;
+    const cx = fWidth / 2;
+    const cy = fHeight / 2;
+    const R = fWidth / 2 - 4;
+    const sensors = ship.systems.sensors;
 
-    // Range rings and cross hair, the same on both scopes
     [fCtx, rCtx].forEach((ctx) => {
       ctx.strokeStyle = 'rgba(92, 255, 122, 0.16)';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      [0.33, 0.66].forEach((f) => { ctx.moveTo(centerX + radarRadius * f, centerY); ctx.arc(centerX, centerY, radarRadius * f, 0, Math.PI * 2); });
-      ctx.moveTo(centerX - radarRadius, centerY); ctx.lineTo(centerX + radarRadius, centerY);
-      ctx.moveTo(centerX, centerY - radarRadius); ctx.lineTo(centerX, centerY + radarRadius);
+      [0.33, 0.66].forEach((f) => { ctx.moveTo(cx + R * f, cy); ctx.arc(cx, cy, R * f, 0, Math.PI * 2); });
+      ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy);
+      ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R);
       ctx.stroke();
-    });
-
-    const shipDirForward = new THREE.Vector3(0, 0, -1).applyQuaternion(ship.quaternion);
-    const shipDirRight = new THREE.Vector3(1, 0, 0).applyQuaternion(ship.quaternion);
-    const shipDirUp = new THREE.Vector3(0, 1, 0).applyQuaternion(ship.quaternion);
-
-    let maxDist = 1;
-    solarSystem.planets.forEach(p => {
-      const dist = p.group.position.distanceTo(ship.position);
-      if (dist > maxDist) maxDist = dist;
-    });
-
-    solarSystem.planets.forEach(p => {
-      const relPos = p.group.position.clone().sub(ship.position);
-      const forwardComp = relPos.dot(shipDirForward);
-      const rightComp = relPos.dot(shipDirRight);
-      const upComp = relPos.dot(shipDirUp);
-
-      const distance = relPos.length();
-      if (distance === 0) return;
-
-      const logScale = Math.log10(distance + 1) / Math.log10(maxDist + 1);
-      const r = logScale * radarRadius;
-
-      const angle = Math.atan2(rightComp, upComp);
-
-      const px = centerX + r * Math.sin(angle);
-      const py = centerY - r * Math.cos(angle);
-
-      const isTargeted = ship.targetObject && ship.targetObject.name === p.name;
-      const dotColor = p.name === 'Sun' || isTargeted ? '#ffb000' : '#5cff7a';
-
-      if (forwardComp > 0) {
-        fCtx.fillStyle = dotColor;
-        fCtx.beginPath();
-        fCtx.arc(px, py, isTargeted ? 4 : 2.5, 0, Math.PI * 2);
-        fCtx.fill();
-
-        if (isTargeted) {
-          fCtx.strokeStyle = '#ffaa00';
-          fCtx.lineWidth = 1;
-          fCtx.beginPath();
-          fCtx.arc(px, py, 6 + Math.sin(Date.now() / 150) * 2, 0, Math.PI * 2);
-          fCtx.stroke();
-        }
-      } else {
-        const mirroredPx = centerX - r * Math.sin(angle);
-
-        rCtx.fillStyle = dotColor;
-        rCtx.beginPath();
-        rCtx.arc(mirroredPx, py, isTargeted ? 4 : 2.5, 0, Math.PI * 2);
-        rCtx.fill();
-
-        if (isTargeted) {
-          rCtx.strokeStyle = '#ffaa00';
-          rCtx.lineWidth = 1;
-          rCtx.beginPath();
-          rCtx.arc(mirroredPx, py, 6 + Math.sin(Date.now() / 150) * 2, 0, Math.PI * 2);
-          rCtx.stroke();
-        }
+      // Static on a damaged scope
+      if (sensors < 0.75) {
+        ctx.fillStyle = 'rgba(92, 255, 122, 0.35)';
+        const n = Math.round((1 - sensors) * 60);
+        for (let i = 0; i < n; i++) ctx.fillRect(Math.random() * fWidth, Math.random() * fHeight, 1.5, 1.5);
       }
     });
 
-    // Also draw Space Stations on radar (as green blips)
+    const inv = ship.quaternion.clone().invert();
+    const local = new THREE.Vector3();
+    const blink = Math.sin(Date.now() / 120) > 0;
+    const plot = (pos, draw) => {
+      local.copy(pos).sub(ship.position).applyQuaternion(inv);
+      const d = local.length();
+      if (d < 1e-6) return;
+      const front = local.z <= 0;
+      const off = Math.acos(THREE.MathUtils.clamp((front ? -local.z : local.z) / d, -1, 1)); // 0 .. pi/2
+      const r = (off / (Math.PI / 2)) * R;
+      const a = Math.atan2(local.y, front ? local.x : -local.x);
+      let x = cx + Math.cos(a) * r;
+      let y = cy - Math.sin(a) * r;
+      if (sensors < 0.5) { x += (Math.random() - 0.5) * (1 - sensors) * 10; y += (Math.random() - 0.5) * (1 - sensors) * 10; }
+      draw(front ? fCtx : rCtx, x, y, d);
+    };
+    const dot = (color, size) => (ctx, x, y) => {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(x, y, size, 0, Math.PI * 2);
+      ctx.fill();
+    };
+    const ring = (ctx, x, y) => {
+      ctx.strokeStyle = '#ffb000';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(x, y, 6 + Math.sin(Date.now() / 150) * 1.5, 0, Math.PI * 2);
+      ctx.stroke();
+    };
+
+    solarSystem.planets.forEach(p => {
+      const targeted = ship.targetObject === p;
+      plot(p.group.position, (ctx, x, y) => {
+        dot(p.name === 'Sun' ? '#ffb000' : 'rgba(92, 255, 122, 0.55)', p.radius > 300 ? 3 : 2)(ctx, x, y);
+        if (targeted) ring(ctx, x, y);
+      });
+    });
     solarSystem.stations.forEach(st => {
-      const relPos = st.mesh.position.clone().sub(ship.position);
-      const forwardComp = relPos.dot(shipDirForward);
-      const rightComp = relPos.dot(shipDirRight);
-      const upComp = relPos.dot(shipDirUp);
-      
-      const distance = relPos.length();
-      const logScale = Math.log10(distance + 1) / Math.log10(maxDist + 1);
-      const r = logScale * radarRadius;
+      if (st.hidden) return;
+      const targeted = ship.targetObject === st;
+      plot(st.mesh.position, (ctx, x, y) => {
+        ctx.strokeStyle = targeted ? '#ffb000' : '#b9ffc6';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(x - 3, y - 3, 6, 6);
+      });
+    });
 
-      const angle = Math.atan2(rightComp, upComp);
-      const px = centerX + r * Math.sin(angle);
-      const py = centerY - r * Math.cos(angle);
-
-      // Hollow square: a station
-      const isTargeted = ship.targetObject === st;
-      const ctx = forwardComp > 0 ? fCtx : rCtx;
-      const x = forwardComp > 0 ? px : centerX - r * Math.sin(angle);
-      ctx.strokeStyle = isTargeted ? '#ffb000' : '#b9ffc6';
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(x - 3, py - 3, 6, 6);
+    const range = ship.sensorRange * (0.55 + 0.45 * sensors);
+    const npcs = this.game.npcs;
+    npcs.ships.forEach((n) => {
+      const d = n.pos.distanceTo(ship.position);
+      if (d > range) return;
+      const hostile = npcs.isHostile(n, ship);
+      const color = hostile ? '#ff3b2f' : n.faction === 'police' ? '#6ab0ff' : n.faction === 'pirate' ? '#ff9a3c' : '#ffd36a';
+      const size = n.radius > 5 ? 3.4 : 2.4;
+      plot(n.pos, (ctx, x, y) => {
+        if (n.radius > 5) {
+          ctx.fillStyle = color;
+          ctx.fillRect(x - size, y - size, size * 2, size * 2);
+        } else {
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.moveTo(x, y - size - 1);
+          ctx.lineTo(x + size, y + size);
+          ctx.lineTo(x - size, y + size);
+          ctx.closePath();
+          ctx.fill();
+        }
+        if (ship.targetObject === n) ring(ctx, x, y);
+      });
+    });
+    // Missiles in flight: white, blinking if they are after us
+    this.game.combat.missiles.forEach((m) => {
+      if (m.pos.distanceTo(ship.position) > range) return;
+      if (m.target === ship && !blink) return;
+      plot(m.pos, dot(m.target === ship ? '#ffffff' : 'rgba(255,255,255,0.6)', 1.6));
+    });
+    this.game.loots.forEach((l) => {
+      if (l.group.position.distanceTo(ship.position) > 600) return;
+      plot(l.group.position, dot('#40f0ff', 1.4));
     });
   }
 }

@@ -32,23 +32,41 @@ export class NavMap {
     this.buildEntries();
   }
 
-  // Planets in orbital order, each station listed under its planet
+  // The mission destination first, then planets in orbital order, each station under its planet and each
+  // moon under its planet with the moon's stations; stations in the belt come after Mars
   buildEntries() {
     const { planets, stations } = this.game.solarSystem;
     this.entries = [];
+    const dest = this.game.missions && this.game.missions.destination();
+    if (dest && dest.kind === 'waypoint') this.entries.push({ object: dest, kind: 'waypoint' });
+    const stationsOf = (body) => stations.filter(st => planets[st.planetIndex] === body && !st.hidden);
     planets.forEach((p, i) => {
+      if (i === 0 || p.parent) return;
       this.entries.push({ object: p, kind: 'planet' });
-      stations.filter(st => st.planetIndex === i).forEach(st => {
-        this.entries.push({ object: st, kind: 'station' });
+      stationsOf(p).forEach(st => this.entries.push({ object: st, kind: 'station' }));
+      (p.moons || []).forEach((m) => {
+        this.entries.push({ object: m, kind: 'moon' });
+        stationsOf(m).forEach(st => this.entries.push({ object: st, kind: 'station' }));
       });
+      if (p.name === 'Mars') {
+        stations.filter(st => st.planetIndex === 0 && !st.hidden).forEach(st => this.entries.push({ object: st, kind: 'station' }));
+      }
     });
+    this.entries.unshift(...(dest && dest.kind === 'waypoint' ? [] : []), { object: planets[0], kind: 'planet' });
+    if (dest && dest.kind === 'waypoint') {
+      // keep the waypoint on top
+      const wp = this.entries.findIndex((e) => e.kind === 'waypoint');
+      this.entries.unshift(this.entries.splice(wp, 1)[0]);
+    }
+    if (this.selectedIndex >= this.entries.length) this.selectedIndex = 0;
 
     this.listEl.innerHTML = '';
     this.entries.forEach((entry, i) => {
       const li = document.createElement('li');
       li.className = entry.kind;
       const name = document.createElement('span');
-      name.textContent = displayName(entry.object.name).toUpperCase();
+      name.textContent = entry.kind === 'waypoint' ? `◆ ${entry.object.name}`
+        : entry.kind === 'moon' ? `· ${displayName(entry.object.name).toUpperCase()}` : displayName(entry.object.name).toUpperCase();
       const dist = document.createElement('span');
       dist.className = 'nav-dist';
       li.append(name, dist);
@@ -73,6 +91,7 @@ export class NavMap {
   open() {
     if (this.isOpen || !this.canOpen()) return;
     this.isOpen = true;
+    this.buildEntries();
 
     // Start on the current target if it is a nav destination, otherwise on Earth
     const target = this.game.ship.targetObject;
@@ -146,12 +165,23 @@ export class NavMap {
     return { x: c + Math.cos(a) * s, y: c + Math.sin(a) * s };
   }
 
-  // Stations sit a fixed few px off their planet so both stay clickable
+  // Moons sit a fixed distance off their planet, in the direction they really are
+  bodyMapPos(body) {
+    if (!body.parent) return this.toMap(this.objectPos(body));
+    const p = this.toMap(this.objectPos(body.parent));
+    const off = this.objectPos(body).clone().sub(this.objectPos(body.parent));
+    const a = Math.atan2(off.z, off.x);
+    const r = 16 + 7 * body.parent.moons.indexOf(body);
+    return { x: p.x + Math.cos(a) * r, y: p.y + Math.sin(a) * r };
+  }
+
+  // Stations sit a fixed few px off their planet or moon so both stay clickable
   entryMapPos(entry) {
-    if (entry.kind === 'station') {
-      const p = this.toMap(this.objectPos(this.game.solarSystem.planets[entry.object.planetIndex]));
+    if (entry.kind === 'station' && entry.object.systemIndex !== 0) {
+      const p = this.bodyMapPos(this.game.solarSystem.planets[entry.object.planetIndex]);
       return { x: p.x + 9, y: p.y - 9 };
     }
+    if (entry.kind === 'moon') return this.bodyMapPos(entry.object);
     return this.toMap(this.objectPos(entry.object));
   }
 
@@ -177,7 +207,7 @@ export class NavMap {
   update(ship, solarSystem) {
     if (!this.isOpen) return;
     this.pulse += 0.08;
-    this.orbits = solarSystem.planets.map(p => Math.hypot(p.group.position.x, p.group.position.z));
+    this.orbits = solarSystem.planets.filter(p => !p.parent).map(p => Math.hypot(p.group.position.x, p.group.position.z));
 
     this.entries.forEach(entry => {
       entry.distEl.textContent = this.formatDist(this.objectPos(entry.object).distanceTo(ship.position));
@@ -186,10 +216,19 @@ export class NavMap {
     const entry = this.entries[this.selectedIndex];
     const dist = this.objectPos(entry.object).distanceTo(ship.position);
     this.selName.textContent = displayName(entry.object.name).toUpperCase();
+    const pos = this.objectPos(entry.object);
+    const sec = this.game.solarSystem.securityAt(pos);
+    const secText = sec >= 0.75 ? 'hoch' : sec >= 0.45 ? 'mittel' : sec >= 0.2 ? 'niedrig' : 'gesetzlos';
+    const cost = this.game.warpCost(dist);
+    const kind = entry.kind === 'waypoint' ? 'Navpunkt · Auftragsziel'
+      : entry.kind === 'station' ? (entry.object.def.faction === 'pirate' ? 'Piratenbasis' : entry.object.def.blackMarket ? 'Raumstation · Schwarzmarkt' : 'Raumstation · Handel und Werft')
+      : entry.object.name === 'Sun' ? 'Stern · Vorsicht, Schwerefeld'
+      : entry.kind === 'moon' ? `Mond von ${displayName(entry.object.parent.name)}` : 'Planet';
+    const fuel = this.game.ship.fuel;
     const lines = [
-      entry.kind === 'station' ? 'Raumstation · Handel und Werft' : entry.object.name === 'Sun' ? 'Stern · Vorsicht, Schwerefeld' : 'Planet',
-      `Entfernung ${this.formatDist(dist)}`,
-      dist < arrivalRadius(entry.object) ? 'Bereits vor Ort' : 'Sprungtriebwerk bereit'
+      kind,
+      `Entfernung ${this.formatDist(dist)} · Sicherheit ${secText}`,
+      dist < arrivalRadius(entry.object) ? 'Bereits vor Ort' : cost === 0 ? 'Sprung: frei (Leicht)' : `Sprung: ${cost} Treibstoff (an Bord ${Math.round(fuel)})${fuel < cost ? ' · ZU WENIG' : ''}`,
     ];
     this.selInfo.textContent = lines.join('\n');
 
@@ -217,6 +256,15 @@ export class NavMap {
 
     // Orbits and planets
     solarSystem.planets.forEach((p, i) => {
+      if (p.parent) {
+        // Moons: a small dot beside the planet
+        const m = this.bodyMapPos(p);
+        ctx.fillStyle = 'rgba(92, 255, 122, 0.8)';
+        ctx.beginPath();
+        ctx.arc(m.x, m.y, 2, 0, Math.PI * 2);
+        ctx.fill();
+        return;
+      }
       const pos = this.toMap(p.group.position);
       if (i > 0) {
         ctx.strokeStyle = 'rgba(92, 255, 122, 0.16)';
@@ -236,10 +284,30 @@ export class NavMap {
       }
     });
 
+    // The belt
+    const beltIn = this.toMap({ x: 3300, z: 0 });
+    const beltOut = this.toMap({ x: 4800, z: 0 });
+    ctx.strokeStyle = 'rgba(200, 170, 120, 0.12)';
+    ctx.lineWidth = Math.max(1, beltOut.x - beltIn.x);
+    ctx.beginPath();
+    ctx.arc(c, c, (beltIn.x + beltOut.x) / 2 - c, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.lineWidth = 1;
+
+    // Mission waypoint
+    this.entries.filter(e => e.kind === 'waypoint').forEach(entry => {
+      const p = this.entryMapPos(entry);
+      ctx.fillStyle = '#ffb000';
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y - 6); ctx.lineTo(p.x + 6, p.y); ctx.lineTo(p.x, p.y + 6); ctx.lineTo(p.x - 6, p.y);
+      ctx.closePath();
+      ctx.fill();
+    });
+
     // Stations
     this.entries.filter(e => e.kind === 'station').forEach(entry => {
       const p = this.entryMapPos(entry);
-      ctx.strokeStyle = '#00f0ff';
+      ctx.strokeStyle = entry.object.def.faction === 'pirate' ? '#ff5030' : entry.object.def.blackMarket ? '#ff9a3c' : '#00f0ff';
       ctx.beginPath();
       ctx.moveTo(p.x, p.y - 4); ctx.lineTo(p.x + 4, p.y); ctx.lineTo(p.x, p.y + 4); ctx.lineTo(p.x - 4, p.y);
       ctx.closePath();

@@ -1,4 +1,5 @@
-// Procedural sound for the cockpit, all synthesized with the Web Audio API (no sample files).
+// Procedural space-opera sound for the cockpit, all synthesized with the Web Audio API (no sample files):
+// singing blaster bolts, chirping droid voices, roaring engines, a howling hyperdrive and a humming beam.
 // Everything runs through one bus: a shared convolution reverb gives sounds a cabin and a tail,
 // a compressor glues layers together and keeps stacked effects from clipping.
 // Each effect is built from layers the way film sound is: a transient for the attack, a tonal body,
@@ -187,266 +188,295 @@ class SpaceAudio {
 
   // ------------------------------------------------------------------------------------------
   // Continuous layers
+  // Space-opera sound: nothing is clean. Engines roar and growl, drives howl, beams buzz.
   // ------------------------------------------------------------------------------------------
 
-  // Ion drive: sub thump, a detuned reactor core, a turbine whine with a little wobble,
-  // brown-noise rumble from the hull and pink-noise exhaust that opens up with thrust
+  // Sublight engines: a deep, throaty roar. A low saw pair gives the growl, brown noise the body,
+  // a random flutter on the volume the grit, and a resonant jet scream rises in at high thrust.
   setupEngine() {
     const e = (this.engine = {});
     e.bus = this.gain(1);
-    this.out(e.bus, { reverb: 0.06 });
+    this.out(e.bus, { reverb: 0.08 });
 
-    e.sub = this.osc('sine', 46);
+    // grit: slowly wandering noise modulating the roar's volume
+    e.grit = this.gain(1);
+    const flutter = this.noiseSource('brown', true);
+    const flutterLp = this.filter('lowpass', 28, 0.5);
+    e.flutterDepth = this.gain(0.25);
+    flutter.connect(flutterLp).connect(e.flutterDepth).connect(e.grit.gain);
+    flutter.start();
+    e.grit.connect(e.bus);
+
+    e.growl1 = this.osc('sawtooth', 38);
+    e.growl2 = this.osc('sawtooth', 38);
+    e.growl2.detune.value = 22;
+    e.growlFilter = this.filter('lowpass', 140, 2.5);
+    e.growlGain = this.gain(0.04);
+    e.growl1.connect(e.growlFilter);
+    e.growl2.connect(e.growlFilter);
+    e.growlFilter.connect(e.growlGain).connect(e.grit);
+
+    e.sub = this.osc('sine', 38);
     e.subGain = this.gain(0.03);
     e.sub.connect(e.subGain).connect(e.bus);
 
-    e.core1 = this.osc('sawtooth', 48);
-    e.core2 = this.osc('sawtooth', 48);
-    e.core2.detune.value = 14;
-    e.coreFilter = this.filter('lowpass', 150, 1.2);
-    e.coreGain = this.gain(0.03);
-    e.core1.connect(e.coreFilter);
-    e.core2.connect(e.coreFilter);
-    e.coreFilter.connect(e.coreGain).connect(e.bus);
+    e.roar = this.noiseSource('brown', true);
+    e.roarFilter = this.filter('lowpass', 220, 0.8);
+    e.roarGain = this.gain(0.035);
+    e.roar.connect(e.roarFilter).connect(e.roarGain).connect(e.grit);
 
-    e.whine = this.osc('sine', 400);
-    e.whineGain = this.gain(0.004);
-    this.lfo(5.3, 5, e.whine.frequency);
-    e.whine.connect(e.whineGain).connect(e.bus);
+    e.scream = this.noiseSource('pink', true);
+    e.screamFilter = this.filter('bandpass', 900, 5);
+    e.screamGain = this.gain(0);
+    e.scream.connect(e.screamFilter).connect(e.screamGain).connect(e.bus);
 
-    e.rumble = this.noiseSource('brown', true);
-    e.rumbleFilter = this.filter('lowpass', 160, 0.9);
-    e.rumbleGain = this.gain(0.03);
-    e.rumble.connect(e.rumbleFilter).connect(e.rumbleGain).connect(e.bus);
-
-    e.hiss = this.noiseSource('pink', true);
-    e.hissFilter = this.filter('bandpass', 500, 0.8);
-    e.hissGain = this.gain(0);
-    e.hiss.connect(e.hissFilter).connect(e.hissGain).connect(e.bus);
-
-    [e.sub, e.core1, e.core2, e.whine, e.rumble, e.hiss].forEach((n) => n.start());
+    [e.growl1, e.growl2, e.sub, e.roar, e.scream].forEach((n) => n.start());
   }
 
   setThrottle(value) {
     if (!this.initialized) return;
     const v = Math.max(0, Math.min(1, value));
     const e = this.engine;
-    const t = 0.25;
-    this.ramp(e.sub.frequency, 44 + v * 16, t);
+    const t = 0.3;
+    this.ramp(e.growl1.frequency, 38 + v * 34, t);
+    this.ramp(e.growl2.frequency, 38 + v * 34, t);
+    this.ramp(e.sub.frequency, 38 + v * 20, t);
+    this.ramp(e.growlFilter.frequency, 140 + v * 700, t);
+    this.ramp(e.growlGain.gain, 0.04 + v * 0.08, t);
     this.ramp(e.subGain.gain, 0.03 + v * 0.06, t);
-    this.ramp(e.core1.frequency, 48 + v * 32, t);
-    this.ramp(e.core2.frequency, 48 + v * 32, t);
-    this.ramp(e.coreFilter.frequency, 150 + v * 1100, t);
-    this.ramp(e.coreGain.gain, 0.03 + v * 0.07, t);
-    this.ramp(e.whine.frequency, 380 + v * 760, t * 1.6);
-    this.ramp(e.whineGain.gain, 0.004 + v * 0.018, t);
-    this.ramp(e.rumbleFilter.frequency, 160 + v * 320, t);
-    this.ramp(e.rumbleGain.gain, 0.03 + v * 0.2, t);
-    this.ramp(e.hissFilter.frequency, 500 + v * 2000, t);
-    this.ramp(e.hissGain.gain, v * 0.12, t);
+    this.ramp(e.roarFilter.frequency, 220 + v * 900, t);
+    this.ramp(e.roarGain.gain, 0.035 + v * 0.22, t);
+    this.ramp(e.flutterDepth.gain, 0.25 + v * 0.35, t);
+    this.ramp(e.screamFilter.frequency, 900 + v * 1700, t * 1.5);
+    this.ramp(e.screamGain.gain, v * v * 0.09, t);
   }
 
-  // Autopilot cruise: a hyperdrive drone that spools up — fifths of detuned saws through a slowly
-  // sweeping resonant filter, a throb, and a high shimmer of filtered noise
+  // Hyperspace: a howling tunnel of wind, two resonant noise bands sweeping past each other,
+  // over a low phasing drone and a thin motivator whine
   setupWarp() {
     const w = (this.warp = {});
     w.out = this.gain(0);
-    this.out(w.out, { reverb: 0.3 });
+    this.out(w.out, { reverb: 0.4 });
 
-    w.throb = this.gain(0.8);
-    this.lfo(2.1, 0.2, w.throb.gain);
-    w.throb.connect(w.out);
+    w.bands = [[420, 0.13, 7], [1300, 0.21, 9]].map(([freq, rate, q]) => {
+      const src = this.noiseSource('pink', true);
+      const bp = this.filter('bandpass', freq, q);
+      const sweep = this.lfo(rate, freq * 0.55, bp.frequency);
+      const g = this.gain(0.5);
+      src.connect(bp).connect(g).connect(w.out);
+      src.start();
+      return { bp, sweep, base: freq };
+    });
 
-    w.filter = this.filter('lowpass', 300, 5);
-    w.sweep = this.lfo(0.3, 180, w.filter.frequency);
-    w.filter.connect(w.throb);
-
-    w.oscs = [[55, 0], [55, 9], [82.5, -6], [110, 4]].map(([f, detune]) => {
+    w.droneFilter = this.filter('lowpass', 260, 3);
+    w.drone = [[49, 0], [49, 17], [73.5, -9]].map(([f, d]) => {
       const o = this.osc('sawtooth', f);
-      o.detune.value = detune;
-      o.connect(w.filter);
+      o.detune.value = d;
+      o.connect(w.droneFilter);
       o.start();
       return o;
     });
+    w.droneGain = this.gain(0.35);
+    w.droneFilter.connect(w.droneGain).connect(w.out);
 
-    w.shimmer = this.noiseSource('white', true);
-    w.shimmerFilter = this.filter('bandpass', 3200, 6);
-    w.shimmerGain = this.gain(0.05);
-    this.lfo(5.5, 0.03, w.shimmerGain.gain);
-    w.shimmer.connect(w.shimmerFilter).connect(w.shimmerGain).connect(w.out);
-    w.shimmer.start();
+    w.whine = this.osc('sine', 1800);
+    this.lfo(7, 25, w.whine.frequency);
+    w.whineGain = this.gain(0.012);
+    w.whine.connect(w.whineGain).connect(w.out);
+    w.whine.start();
   }
 
   setWarp(active) {
     if (!this.initialized) return;
     const w = this.warp;
     const t = this.now;
-    const pitch = active ? 1.33 : 1;
-    w.oscs.forEach((o, i) => {
-      const base = [55, 55, 82.5, 110][i];
+    const lift = active ? 1.3 : 1;
+    w.drone.forEach((o, i) => {
       o.frequency.cancelScheduledValues(t);
-      o.frequency.setTargetAtTime(base * pitch, t, active ? 0.7 : 0.25);
+      o.frequency.setTargetAtTime([49, 49, 73.5][i] * lift, t, active ? 0.8 : 0.25);
     });
-    w.filter.frequency.cancelScheduledValues(t);
-    w.filter.frequency.setTargetAtTime(active ? 1100 : 300, t, active ? 0.9 : 0.2);
+    w.bands.forEach((b) => {
+      b.bp.frequency.cancelScheduledValues(t);
+      b.bp.frequency.setTargetAtTime(b.base * (active ? 1.6 : 1), t, 1.2);
+    });
+    w.whine.frequency.cancelScheduledValues(t);
+    w.whine.frequency.setTargetAtTime(active ? 2600 : 1800, t, 1.0);
     w.out.gain.cancelScheduledValues(t);
-    w.out.gain.setTargetAtTime(active ? 0.13 : 0, t, active ? 0.25 : 0.15);
-    // the drive takes over from the thrusters
-    this.ramp(this.engine.bus.gain, active ? 0.45 : 1, 0.6);
+    w.out.gain.setTargetAtTime(active ? 0.16 : 0, t, active ? 0.35 : 0.15);
+    // the drive takes over from the sublight engines
+    this.ramp(this.engine.bus.gain, active ? 0.4 : 1, 0.6);
   }
 
-  // Cabin ambience: a quiet, slowly breathing pad and air-handling room tone
+  // Cabin: a quiet low hum of systems and air handling, so silence never sounds dead
   setupAmbience() {
     const a = (this.ambience = {});
-    a.out = this.gain(0.02);
+    a.out = this.gain(0.018);
     this.out(a.out, { reverb: 0.5 });
-    a.filter = this.filter('lowpass', 420, 0.6);
-    this.lfo(0.04, 160, a.filter.frequency);
+    a.filter = this.filter('lowpass', 380, 0.6);
+    this.lfo(0.05, 140, a.filter.frequency);
     a.filter.connect(a.out);
-    [[73.42, 0], [110, 5], [146.83, -7], [73.42, 11]].forEach(([f, d]) => {
+    [[60, 0], [120, 6], [180, -5]].forEach(([f, d]) => {
       const o = this.osc('sine', f);
       o.detune.value = d;
       o.connect(a.filter);
       o.start();
     });
     a.room = this.noiseSource('pink', true);
-    a.roomFilter = this.filter('bandpass', 260, 0.5);
-    a.roomGain = this.gain(0.015);
+    a.roomFilter = this.filter('bandpass', 300, 0.5);
+    a.roomGain = this.gain(0.014);
     a.room.connect(a.roomFilter).connect(a.roomGain).connect(this.bus);
     a.room.start();
   }
 
-  // Tractor beam: a pulsing, resonant hum; the pulse comes from LFOs, not per-frame code
+  // Tractor beam: the buzzing hum of an energy blade, two close saws beating against each
+  // other, a resonant edge and a faint feedback whine, breathing slowly
   setupTractor() {
     const b = (this.tractor = {});
     b.out = this.gain(0);
-    this.out(b.out, { reverb: 0.25 });
-    b.pulse = this.gain(0.7);
-    this.lfo(7, 0.3, b.pulse.gain);
-    b.pulse.connect(b.out);
-    b.filter = this.filter('bandpass', 420, 6);
-    this.lfo(0.8, 160, b.filter.frequency);
-    b.filter.connect(b.pulse);
-    b.osc1 = this.osc('sawtooth', 130);
-    b.osc2 = this.osc('sawtooth', 195);
-    b.osc2.detune.value = 8;
-    this.lfo(0.8, 12, b.osc1.frequency);
-    b.osc1.connect(b.filter);
-    b.osc2.connect(b.filter);
-    b.osc1.start();
-    b.osc2.start();
+    this.out(b.out, { reverb: 0.3 });
+    b.swell = this.gain(0.8);
+    this.lfo(0.7, 0.2, b.swell.gain);
+    b.swell.connect(b.out);
+
+    b.filter = this.filter('lowpass', 700, 3);
+    this.lfo(0.45, 120, b.filter.frequency);
+    b.filter.connect(b.swell);
+    b.hum = [[88, 0], [90.5, 0], [176, 7]].map(([f, d]) => {
+      const o = this.osc('sawtooth', f);
+      o.detune.value = d;
+      o.connect(b.filter);
+      o.start();
+      return o;
+    });
+    b.whine = this.osc('sine', 1180);
+    this.lfo(0.45, 9, b.whine.frequency);
+    const wg = this.gain(0.04);
+    b.whine.connect(wg).connect(b.swell);
+    b.whine.start();
   }
 
   setTractorBeam(active) {
     if (!this.initialized || active === this.tractorOn) return;
     this.tractorOn = active;
-    this.ramp(this.tractor.out.gain, active ? 0.24 : 0, active ? 0.15 : 0.25);
+    const t = this.now;
+    // the blade ignites with a quick upward sweep and dies with a fall
+    this.tractor.hum.forEach((o, i) => {
+      const base = [88, 90.5, 176][i];
+      o.frequency.cancelScheduledValues(t);
+      o.frequency.setValueAtTime(base * (active ? 0.6 : 1), t);
+      o.frequency.exponentialRampToValueAtTime(base * (active ? 1 : 0.55), t + (active ? 0.25 : 0.3));
+    });
+    this.ramp(this.tractor.out.gain, active ? 0.17 : 0, active ? 0.12 : 0.3);
   }
 
   // ------------------------------------------------------------------------------------------
   // One-shots
   // ------------------------------------------------------------------------------------------
 
-  // Console blip: a clean tone with a quiet octave, very short
-  playBeep() {
-    if (!this.initialized || this.muted) return;
-    const t = this.now;
+  // A little droid voice: a few quick whistled notes, glides and a trill, different every time
+  droidChirp(t, { notes = 4, low = 1100, high = 2600, step = 0.035, level = 0.11, rising = 0, pan = 0 } = {}) {
+    const o = this.osc('sine', low);
+    const vib = this.lfo(28, 0, o.frequency);
     const g = this.gain();
-    this.envelope(g.gain, t, 0.004, 0.13, 0.11);
-    [[1318.5, 1], [2637, 0.22]].forEach(([f, level]) => {
-      const o = this.osc('sine', f);
-      o.frequency.setValueAtTime(f, t);
-      o.frequency.exponentialRampToValueAtTime(f * 0.94, t + 0.1);
-      const lg = this.gain(level);
-      o.connect(lg).connect(g);
-      o.start(t);
-      o.stop(t + 0.16);
-    });
-    this.out(g, { reverb: 0.12 });
+    let at = t;
+    for (let i = 0; i < notes; i++) {
+      const bias = rising ? (rising > 0 ? i / Math.max(1, notes - 1) : 1 - i / Math.max(1, notes - 1)) : Math.random();
+      const f = low + (high - low) * (0.15 + 0.85 * (rising ? bias * 0.8 + Math.random() * 0.2 : bias));
+      if (Math.random() < 0.5) o.frequency.setValueAtTime(f, at);
+      else o.frequency.exponentialRampToValueAtTime(f, at + step * 0.8);
+      at += step * (0.7 + Math.random() * 0.6);
+    }
+    // a trill on the last note
+    vib.depth.gain.setValueAtTime(0, t);
+    vib.depth.gain.setValueAtTime(Math.random() < 0.6 ? 90 : 0, at - step);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(level, t + 0.008);
+    g.gain.setValueAtTime(level, at - 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, at + 0.05);
+    o.connect(g);
+    this.out(g, { pan, reverb: 0.12 });
+    o.start(t);
+    o.stop(at + 0.08);
+    vib.osc.stop(at + 0.08);
   }
 
-  // Twin wingtip guns, left then right: a noise click, a falling resonant zap and a short body
+  playBeep() {
+    if (!this.initialized || this.muted) return;
+    this.droidChirp(this.now, { notes: 2 + Math.floor(Math.random() * 2), step: 0.03, level: 0.12 });
+  }
+
+  // Blasters: the struck-cable "pew". A few metallic partials fall in pitch at slightly different
+  // speeds (the dispersion that makes it sing), FM adds the steel ring, a click gives the snap.
   playLaserFire() {
     if (!this.initialized || this.muted) return;
     const t0 = this.now;
     [-1, 1].forEach((side, i) => {
-      const t = t0 + i * 0.035;
-      const pan = side * 0.45;
-      const wobble = 1 + (Math.random() - 0.5) * 0.06;
+      const t = t0 + i * 0.04;
+      const pan = side * 0.5;
+      const pitch = 1 + (Math.random() - 0.5) * 0.08;
+      const voice = this.gain(1);
+      this.out(voice, { pan, reverb: 0.22 });
+
+      // dispersive partials: higher ones drop faster
+      [[1, 0.2, 0.16], [1.52, 0.15, 0.08], [2.31, 0.11, 0.045]].forEach(([ratio, fall, level]) => {
+        const f0 = 2400 * pitch * ratio;
+        const o = this.osc('sine', f0);
+        o.frequency.setValueAtTime(f0, t);
+        o.frequency.exponentialRampToValueAtTime(f0 * 0.085, t + fall);
+        // steel ring: an inharmonic modulator whose depth dies quickly
+        const mod = this.osc('sine', f0 * 1.41);
+        mod.frequency.setValueAtTime(f0 * 1.41, t);
+        mod.frequency.exponentialRampToValueAtTime(f0 * 0.12, t + fall);
+        const modDepth = this.gain(0);
+        modDepth.gain.setValueAtTime(f0 * 0.6, t);
+        modDepth.gain.exponentialRampToValueAtTime(1, t + fall * 0.7);
+        mod.connect(modDepth).connect(o.frequency);
+        const g = this.gain();
+        this.envelope(g.gain, t, 0.0015, level, fall + 0.05);
+        o.connect(g).connect(voice);
+        o.start(t);
+        mod.start(t);
+        o.stop(t + fall + 0.08);
+        mod.stop(t + fall + 0.08);
+      });
 
       const click = this.noiseSource('white');
-      const clickHp = this.filter('highpass', 2500, 0.7);
+      const clickHp = this.filter('highpass', 3000, 0.7);
       const clickGain = this.gain();
-      this.envelope(clickGain.gain, t, 0.001, 0.2, 0.03);
-      click.connect(clickHp).connect(clickGain);
-      this.out(clickGain, { pan, reverb: 0.05 });
+      this.envelope(clickGain.gain, t, 0.0008, 0.14, 0.018);
+      click.connect(clickHp).connect(clickGain).connect(voice);
       click.start(t, Math.random());
-      click.stop(t + 0.05);
-
-      const zap = this.osc('square', 1700 * wobble);
-      zap.frequency.setValueAtTime(1700 * wobble, t);
-      zap.frequency.exponentialRampToValueAtTime(170, t + 0.17);
-      const zapBp = this.filter('bandpass', 2600, 3.5);
-      zapBp.frequency.setValueAtTime(2600, t);
-      zapBp.frequency.exponentialRampToValueAtTime(450, t + 0.17);
-      const zapGain = this.gain();
-      this.envelope(zapGain.gain, t, 0.002, 0.38, 0.19);
-      zap.connect(zapBp).connect(zapGain);
-      this.out(zapGain, { pan, reverb: 0.16 });
-      zap.start(t);
-      zap.stop(t + 0.22);
-
-      const body = this.osc('sawtooth', 420 * wobble);
-      body.frequency.setValueAtTime(420 * wobble, t);
-      body.frequency.exponentialRampToValueAtTime(70, t + 0.12);
-      const bodyLp = this.filter('lowpass', 900, 1);
-      const bodyGain = this.gain();
-      this.envelope(bodyGain.gain, t, 0.002, 0.15, 0.12);
-      body.connect(bodyLp).connect(bodyGain);
-      this.out(bodyGain, { pan: pan * 0.5, reverb: 0.08 });
-      body.start(t);
-      body.stop(t + 0.15);
+      click.stop(t + 0.03);
     });
   }
 
-  // Engaged: a bright rising two-note chime. Released or refused: a soft falling two-tone.
+  // Autopilot engaged: a cheerful rising droid warble. Released or refused: a falling, glum whistle.
   playAutopilotAlert(engaged) {
     if (!this.initialized || this.muted) return;
     const t = this.now;
     if (engaged) {
-      [[659.25, 0], [987.77, 0.075]].forEach(([f, delay]) => {
-        const g = this.gain();
-        this.envelope(g.gain, t + delay, 0.006, 0.14, 0.38);
-        [['triangle', f, 1], ['sine', f * 2, 0.3]].forEach(([type, freq, level]) => {
-          const o = this.osc(type, freq);
-          const lg = this.gain(level);
-          o.connect(lg).connect(g);
-          o.start(t + delay);
-          o.stop(t + delay + 0.45);
-        });
-        this.out(g, { reverb: 0.3 });
-      });
+      this.droidChirp(t, { notes: 5, low: 900, high: 2800, step: 0.045, level: 0.12, rising: 1 });
     } else {
-      [[392, 0], [261.63, 0.09]].forEach(([f, delay]) => {
-        const o = this.osc('square', f);
-        const lp = this.filter('lowpass', 1100, 0.8);
-        const g = this.gain();
-        this.envelope(g.gain, t + delay, 0.005, 0.1, 0.16);
-        o.connect(lp).connect(g);
-        this.out(g, { reverb: 0.15 });
-        o.start(t + delay);
-        o.stop(t + delay + 0.2);
-      });
+      const o = this.osc('sine', 1500);
+      o.frequency.setValueAtTime(1500, t);
+      o.frequency.exponentialRampToValueAtTime(1650, t + 0.05);
+      o.frequency.exponentialRampToValueAtTime(420, t + 0.42);
+      this.lfo(9, 30, o.frequency).osc.stop(t + 0.5);
+      const g = this.gain();
+      this.envelope(g.gain, t, 0.01, 0.1, 0.42);
+      o.connect(g);
+      this.out(g, { reverb: 0.2 });
+      o.start(t);
+      o.stop(t + 0.5);
     }
   }
 
-  // Jump: the charging saw sweep and its pop, thickened by a detuned twin, an air rush that
-  // swells with it, and a sub boom with a long tail when the ship goes
+  // Hyperspace jump: the charging saw sweep and its pop (the reference sound), with the
+  // drive's whine screaming up beside it, then a dopplered rush and a deep "thoom" as the ship goes
   playWarpJump() {
     if (!this.initialized || this.muted) return;
     const now = this.now;
 
-    // the signature sweep
     const sweepGain = this.gain();
     sweepGain.gain.setValueAtTime(0.16, now);
     sweepGain.gain.setValueAtTime(0.24, now + 0.3);
@@ -468,79 +498,108 @@ class SpaceAudio {
     filter.connect(sweepGain);
     this.out(sweepGain, { reverb: 0.3 });
 
-    // air rush rising into the jump
+    // motivator whine screaming up with the charge
+    const whine = this.osc('sine', 500);
+    whine.frequency.setValueAtTime(500, now);
+    whine.frequency.exponentialRampToValueAtTime(3400, now + 0.34);
+    this.lfo(14, 40, whine.frequency).osc.stop(now + 0.4);
+    const whineGain = this.gain();
+    whineGain.gain.setValueAtTime(0.0001, now);
+    whineGain.gain.exponentialRampToValueAtTime(0.07, now + 0.3);
+    whineGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.4);
+    whine.connect(whineGain);
+    this.out(whineGain, { reverb: 0.3 });
+    whine.start(now);
+    whine.stop(now + 0.42);
+
+    // the rush past, falling in pitch like something flying away
     const rush = this.noiseSource('pink');
-    const rushBp = this.filter('bandpass', 300, 1.2);
-    rushBp.frequency.setValueAtTime(300, now);
-    rushBp.frequency.exponentialRampToValueAtTime(5000, now + 0.36);
-    rushBp.frequency.exponentialRampToValueAtTime(400, now + 1.1);
+    const rushBp = this.filter('bandpass', 600, 1.4);
+    rushBp.frequency.setValueAtTime(600, now);
+    rushBp.frequency.exponentialRampToValueAtTime(5200, now + 0.36);
+    rushBp.frequency.exponentialRampToValueAtTime(260, now + 1.3);
     const rushGain = this.gain();
     rushGain.gain.setValueAtTime(0.0001, now);
-    rushGain.gain.exponentialRampToValueAtTime(0.35, now + 0.34);
-    rushGain.gain.exponentialRampToValueAtTime(0.0001, now + 1.1);
+    rushGain.gain.exponentialRampToValueAtTime(0.38, now + 0.36);
+    rushGain.gain.exponentialRampToValueAtTime(0.0001, now + 1.3);
     rush.connect(rushBp).connect(rushGain);
-    this.out(rushGain, { reverb: 0.35 });
+    this.out(rushGain, { reverb: 0.4 });
     rush.start(now);
-    rush.stop(now + 1.15);
+    rush.stop(now + 1.35);
 
-    // sub boom at the moment of the jump
-    const boom = this.osc('sine', 140);
-    boom.frequency.setValueAtTime(140, now + 0.35);
-    boom.frequency.exponentialRampToValueAtTime(30, now + 1.0);
+    // thoom
+    const boom = this.osc('sine', 110);
+    boom.frequency.setValueAtTime(110, now + 0.35);
+    boom.frequency.exponentialRampToValueAtTime(26, now + 1.3);
     const boomGain = this.gain();
-    this.envelope(boomGain.gain, now + 0.35, 0.01, 0.4, 0.8);
+    this.envelope(boomGain.gain, now + 0.35, 0.012, 0.5, 1.1);
     boom.connect(boomGain);
-    this.out(boomGain, { reverb: 0.45 });
+    this.out(boomGain, { reverb: 0.5 });
     boom.start(now + 0.34);
-    boom.stop(now + 1.25);
+    boom.stop(now + 1.5);
   }
 
-  // A crack, a roaring body of falling noise, a sub thump and crackling debris, in a long tail
+  // A big space-opera blast: crack, a deep double boom, roaring debris cloud, crackle,
+  // and a metallic ring dying away in a long tail
   playShipExplosion() {
     if (!this.initialized || this.muted) return;
     const t = this.now;
 
     const crack = this.noiseSource('white');
-    const crackHp = this.filter('highpass', 1200, 0.7);
+    const crackHp = this.filter('highpass', 1500, 0.7);
     const crackGain = this.gain();
-    this.envelope(crackGain.gain, t, 0.002, 0.5, 0.18);
+    this.envelope(crackGain.gain, t, 0.001, 0.55, 0.14);
     crack.connect(crackHp).connect(crackGain);
-    this.out(crackGain, { reverb: 0.4 });
+    this.out(crackGain, { reverb: 0.5 });
     crack.start(t);
-    crack.stop(t + 0.25);
+    crack.stop(t + 0.2);
+
+    [[0, 85, 0.75], [0.22, 60, 0.5]].forEach(([delay, f, level]) => {
+      const boom = this.osc('sine', f);
+      boom.frequency.setValueAtTime(f, t + delay);
+      boom.frequency.exponentialRampToValueAtTime(18, t + delay + 1.6);
+      const g = this.gain();
+      this.envelope(g.gain, t + delay, 0.006, level, 1.6);
+      boom.connect(g);
+      this.out(g, { reverb: 0.4 });
+      boom.start(t + delay);
+      boom.stop(t + delay + 1.7);
+    });
 
     const roar = this.noiseSource('brown');
-    const roarLp = this.filter('lowpass', 1600, 0.9);
-    roarLp.frequency.setValueAtTime(1600, t);
-    roarLp.frequency.exponentialRampToValueAtTime(60, t + 2.6);
+    const roarLp = this.filter('lowpass', 2200, 0.9);
+    roarLp.frequency.setValueAtTime(2200, t);
+    roarLp.frequency.exponentialRampToValueAtTime(70, t + 3.2);
     const roarGain = this.gain();
-    this.envelope(roarGain.gain, t, 0.01, 0.9, 2.6);
+    this.envelope(roarGain.gain, t, 0.01, 1.0, 3.2);
     roar.connect(roarLp).connect(roarGain);
-    this.out(roarGain, { reverb: 0.5 });
+    this.out(roarGain, { reverb: 0.6 });
     roar.start(t);
-    roar.stop(t + 2.8);
+    roar.stop(t + 3.3);
 
-    const thump = this.osc('sine', 95);
-    thump.frequency.setValueAtTime(95, t);
-    thump.frequency.exponentialRampToValueAtTime(24, t + 1.2);
-    const thumpGain = this.gain();
-    this.envelope(thumpGain.gain, t, 0.005, 0.7, 1.2);
-    thump.connect(thumpGain);
-    this.out(thumpGain, { reverb: 0.3 });
-    thump.start(t);
-    thump.stop(t + 1.3);
-
-    // debris: short random grains, scattered across the stereo field
-    for (let i = 0; i < 22; i++) {
-      const at = t + 0.05 + Math.pow(Math.random(), 1.6) * 1.6;
-      const grain = this.noiseSource('white');
-      const bp = this.filter('bandpass', 800 + Math.random() * 3500, 2);
+    // ringing hull: inharmonic partials, like struck sheet metal
+    [173, 287, 411, 563].forEach((f, i) => {
+      const o = this.osc('sine', f);
+      o.frequency.setValueAtTime(f, t);
+      o.frequency.exponentialRampToValueAtTime(f * 0.92, t + 2.5);
       const g = this.gain();
-      this.envelope(g.gain, at, 0.001, 0.05 + Math.random() * 0.08, 0.03 + Math.random() * 0.06);
+      this.envelope(g.gain, t + 0.02, 0.004, 0.03 / (i + 1), 2.4);
+      o.connect(g);
+      this.out(g, { pan: (i % 2 ? 1 : -1) * 0.3, reverb: 0.6 });
+      o.start(t);
+      o.stop(t + 2.6);
+    });
+
+    for (let i = 0; i < 30; i++) {
+      const at = t + 0.05 + Math.pow(Math.random(), 1.5) * 2.0;
+      const grain = this.noiseSource('white');
+      const bp = this.filter('bandpass', 700 + Math.random() * 4000, 2);
+      const g = this.gain();
+      this.envelope(g.gain, at, 0.001, 0.05 + Math.random() * 0.1, 0.03 + Math.random() * 0.07);
       grain.connect(bp).connect(g);
-      this.out(g, { pan: Math.random() * 1.6 - 0.8, reverb: 0.35 });
+      this.out(g, { pan: Math.random() * 1.6 - 0.8, reverb: 0.4 });
       grain.start(at, Math.random() * 2);
-      grain.stop(at + 0.12);
+      grain.stop(at + 0.14);
     }
   }
 

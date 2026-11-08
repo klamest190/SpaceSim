@@ -113,7 +113,7 @@ float detailOctaves(vec3 pos, float freq) {
 `;
 
 // Ray against a sphere at the origin: entry and exit distance, or (1e9, -1e9) on a miss
-const RAY_SPHERE = /* glsl */ `
+export const RAY_SPHERE = /* glsl */ `
 vec2 raySphere(vec3 ro, vec3 rd, float r) {
   float b = dot(ro, rd);
   float c = dot(ro, ro) - r * r;
@@ -144,6 +144,18 @@ uniform float uSunE;
 #define ATMO_STEPS 10
 #endif
 
+// Haze that scatters some colours more than others and swallows the rest (Titan's orange smog);
+// plain grey Mie scattering with a little absorption otherwise
+#ifdef MIE_TINT
+uniform vec3 uMieCol;
+uniform vec3 uMieExt;
+#define MIE_SCA (uBetaM * uMieCol)
+#define MIE_EXT (uBetaM * uMieExt)
+#else
+#define MIE_SCA vec3(uBetaM)
+#define MIE_EXT vec3(uBetaM * 1.1)
+#endif
+
 void atmosphere(vec3 ro, vec3 rd, float tMax, vec3 sunDir, float radius, out vec3 inscatter, out vec3 transmit) {
   inscatter = vec3(0.0);
   transmit = vec3(1.0);
@@ -152,16 +164,27 @@ void atmosphere(vec3 ro, vec3 rd, float tMax, vec3 sunDir, float radius, out vec
   float t1 = min(ta.y, tMax);
   if (t1 <= t0) return;
 
-  float ds = (t1 - t0) / float(ATMO_STEPS);
   float odR = 0.0;
   float odM = 0.0;
   vec3 sumR = vec3(0.0);
   vec3 sumM = vec3(0.0);
+#ifdef ATMO_FIXED_STEP
+  // Equal steps for every ray, so a deep haze looks the same just inside and just outside the solid disc
+  float ds = 2.0 * sqrt(uAtmoTop * uAtmoTop - radius * radius) / float(ATMO_STEPS);
+  for (int i = 0; i < ATMO_STEPS * 2; i++) {
+    float sa = t0 + float(i) * ds;
+    if (sa >= t1) break;
+    float seg = min(ds, t1 - sa);
+    vec3 p = ro + rd * (sa + 0.5 * seg);
+#else
+  float ds = (t1 - t0) / float(ATMO_STEPS);
   for (int i = 0; i < ATMO_STEPS; i++) {
+    float seg = ds;
     vec3 p = ro + rd * (t0 + (float(i) + 0.5) * ds);
+#endif
     float h = max(length(p) - radius, 0.0);
-    float dR = exp(-h / uHR) * ds;
-    float dM = exp(-h / uHM) * ds;
+    float dR = exp(-h / uHR) * seg;
+    float dM = exp(-h / uHM) * seg;
     odR += dR;
     odM += dM;
     // Points in the planet's shadow get no sunlight; the edge is soft, like a real terminator
@@ -178,7 +201,7 @@ void atmosphere(vec3 ro, vec3 rd, float tMax, vec3 sunDir, float radius, out vec
         lR += exp(-hq / uHR) * dsl;
         lM += exp(-hq / uHM) * dsl;
       }
-      vec3 att = exp(-(uBetaR * (odR + lR) + uBetaM * 1.1 * (odM + lM))) * sunVis;
+      vec3 att = exp(-(uBetaR * (odR + lR) + MIE_EXT * (odM + lM))) * sunVis;
       sumR += dR * att;
       sumM += dM * att;
     }
@@ -187,8 +210,8 @@ void atmosphere(vec3 ro, vec3 rd, float tMax, vec3 sunDir, float radius, out vec
   float phaseR = 3.0 / (16.0 * PI) * (1.0 + mu * mu);
   float g = uMieG;
   float phaseM = 3.0 / (8.0 * PI) * ((1.0 - g * g) * (1.0 + mu * mu)) / ((2.0 + g * g) * pow(1.0 + g * g - 2.0 * g * mu, 1.5));
-  inscatter = uSunE * (sumR * uBetaR * phaseR + sumM * uBetaM * phaseM);
-  transmit = exp(-(uBetaR * odR + uBetaM * 1.1 * odM));
+  inscatter = uSunE * (sumR * uBetaR * phaseR + sumM * MIE_SCA * phaseM);
+  transmit = exp(-(uBetaR * odR + MIE_EXT * odM));
 }
 `;
 
@@ -267,6 +290,262 @@ vec3 swirl(vec3 p, vec3 c, float strength, float size) {
   vec3 axis = c;
   return p * cos(a) + cross(axis, p) * sin(a) + axis * dot(axis, p) * (1.0 - cos(a));
 }
+
+// Moons are tidally locked: longitude 0 faces their planet, and east longitudes (as on the maps) lie towards -z
+vec3 selDir(float latDeg, float lonEastDeg) {
+  return dirAt(latDeg, -lonEastDeg);
+}
+
+float angleTo(vec3 p, vec3 c) {
+  return acos(clamp(dot(p, c), -1.0, 1.0));
+}
+
+// One named crater: bowl, rim and central peak, radius r in radians
+float bowl(vec3 p, vec3 c, float r) {
+  float d = angleTo(p, c) / r;
+  float b = d < 1.0 ? (d * d - 1.0) : 0.0;
+  float rim = exp(-pow((d - 1.0) * 4.0, 2.0)) * 0.3;
+  float peak = 0.35 * exp(-d * d * 28.0);
+  return (b + rim + peak) * r;
+}
+
+// Bright rays of a young crater, thrown out over len radians, broken up along their length
+float crRays(vec3 p, vec3 c, float len, float seed) {
+  float d = angleTo(p, c);
+  vec3 t1 = normalize(cross(c, abs(c.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+  vec3 t2 = cross(c, t1);
+  float az = atan(dot(p, t2), dot(p, t1));
+  vec2 a = vec2(cos(az), sin(az));
+  float streak = pow(max(snoise(vec3(a * 5.0, seed)), 0.0), 1.5) + pow(max(snoise(vec3(a * 13.0, seed + 3.0)), 0.0), 2.0);
+  float broken = 0.55 + 0.45 * snoise(vec3(a * 13.0, d * 25.0 + seed));
+  float halo = exp(-pow(d / (len * 0.1), 2.0));
+  return clamp(streak * broken * exp(-d / len) * 1.6 + halo * 0.9, 0.0, 1.0);
+}
+
+#ifdef LUNA
+// A lava plain around (lat, lon) of angular radius r: soft, so neighbouring basins flow into one another
+float mare(vec3 p, float lat, float lon, float r) {
+  return exp(-1.5 * pow(angleTo(p, selDir(lat, lon)) / (r * 1.35), 2.0));
+}
+
+void bakePlanet(vec3 p, out vec4 col, out vec4 aux) {
+  vec3 q = normalize(p + 0.11 * vec3(fbm(p * 3.0, 5), fbm(p * 3.0 + 3.0, 5), fbm(p * 3.0 + 6.0, 5))
+                       + 0.035 * vec3(fbm(p * 11.0, 4), fbm(p * 11.0 + 5.0, 4), fbm(p * 11.0 + 9.0, 4)));
+  // The maria of the near side where they really are, a few small ones at the limb and on the far side
+  float m = mare(q, 33.0, -16.0, 0.30);          // Imbrium
+  m += (mare(q, 28.0, 17.5, 0.19));         // Serenitatis
+  m += (mare(q, 8.5, 31.0, 0.21));          // Tranquillitatis
+  m += (mare(q, 17.0, 59.0, 0.14));         // Crisium
+  m += (mare(q, -7.8, 51.3, 0.16));         // Fecunditatis
+  m += (mare(q, -15.0, 35.0, 0.09));        // Nectaris
+  m += (mare(q, -21.0, -16.6, 0.16));       // Nubium
+  m += (mare(q, -24.4, -38.6, 0.11));       // Humorum
+  m += (mare(q, -10.0, -23.0, 0.10));       // Cognitum
+  m += (mare(q, 7.5, -31.0, 0.13));         // Insularum
+  m += (mare(q, 13.3, 3.6, 0.08));          // Vaporum
+  m += (mare(q, 22.0, -55.0, 0.31));        // Oceanus Procellarum, vast and ragged
+  m += (mare(q, 2.0, -50.0, 0.24));
+  m += (mare(q, 38.0, -42.0, 0.19));
+  m += (mare(q, -10.0, -56.0, 0.14));
+  m += (mare(q, 1.3, 87.0, 0.09));          // Smythii
+  m += (mare(q, 13.0, 86.0, 0.07));         // Marginis
+  m += (mare(q, -38.0, 93.0, 0.10) * 0.7);  // Australe, patchy
+  m += (mare(q, 27.0, 148.0, 0.06));        // Moscoviense on the far side
+  m += (mare(q, -19.0, -93.0, 0.045));      // the heart of Orientale
+  m = max(m, 1.0 - smoothstep(0.022, 0.03, angleTo(p, selDir(51.6, -9.4))));   // Plato's dark floor
+  m = max(m, 1.0 - smoothstep(0.04, 0.052, angleTo(q, selDir(-5.5, -68.3)))); // Grimaldi
+  // Mare Frigoris: a long thin band in the far north
+  float latD = degrees(asin(clamp(q.y, -1.0, 1.0)));
+  float lonE = -degrees(atan(q.z, q.x));
+  float frig = exp(-pow((latD - 56.0) / 5.0, 2.0)) * smoothstep(-62.0, -30.0, lonE) * smoothstep(55.0, 25.0, lonE);
+  m = max(m, frig);
+  // Ragged shores: the plains flood the low ground unevenly
+  m = smoothstep(0.36, 0.62, m + 0.22 * fbm(p * 7.0 + 21.0, 5));
+  m = clamp(m * (0.9 + 0.2 * fbm(p * 11.0, 3)), 0.0, 1.0);
+
+  // South Pole-Aitken: the oldest, deepest basin, a little darker
+  float spa = 1.0 - smoothstep(0.6, 1.05, angleTo(q, selDir(-53.0, -169.0)));
+  // Orientale's rings
+  float dO = angleTo(p, selDir(-19.4, -92.8));
+  float rings = exp(-pow((dO - 0.27) / 0.012, 2.0)) + 0.7 * exp(-pow((dO - 0.18) / 0.01, 2.0)) + 0.5 * exp(-pow((dO - 0.12) / 0.008, 2.0));
+
+  float glow = 0.0;
+  float crater = craters(p, 1.3, glow);
+  float h = fbm(p * 2.5, 6) * 0.06 + 0.03 * ridged(p * 5.0, 4);
+  h = h * (1.0 - m * 0.8) + crater * mix(1.3, 0.3, m) - m * 0.03 - spa * 0.06 + rings * 0.02;
+  h += bowl(p, selDir(-43.3, -11.2), 0.026) * 1.2   // Tycho
+     + bowl(p, selDir(9.6, -20.1), 0.028) * 1.2      // Copernicus
+     + bowl(p, selDir(-58.4, -14.4), 0.066) * 0.6    // Clavius
+     + bowl(p, selDir(8.1, -38.0), 0.01)             // Kepler
+     + bowl(p, selDir(23.7, -47.4), 0.012);          // Aristarchus
+
+  // Bright anorthosite highlands, dark basalt maria: titanium-rich ones bluish, iron-rich ones brownish
+  vec3 high = mix(vec3(0.60, 0.585, 0.56), vec3(0.73, 0.71, 0.67), smoothstep(-0.3, 0.4, fbm(p * 3.0 + 7.0, 5)));
+  vec3 mareC = mix(vec3(0.27, 0.285, 0.31), vec3(0.34, 0.32, 0.29), smoothstep(-0.35, 0.35, fbm(p * 2.2 + 13.0, 4)));
+  vec3 c = mix(high, mareC, m);
+  c *= mix(vec3(1.0), vec3(0.86, 0.84, 0.82), spa * 0.6);
+  c *= 0.9 + 0.2 * fbm(p * 40.0, 3);
+  float ray = crRays(p, selDir(-43.3, -11.2), 0.3, 1.0)
+            + crRays(p, selDir(9.6, -20.1), 0.13, 5.0) * 0.8
+            + crRays(p, selDir(8.1, -38.0), 0.07, 9.0) * 0.6
+            + crRays(p, selDir(23.7, -47.4), 0.05, 13.0) * 0.7;
+  c = mix(c, vec3(0.82, 0.81, 0.78), clamp(ray, 0.0, 1.0) * 0.45);
+  c += glow * vec3(0.12);
+  col = vec4(c, h);
+  aux = vec4(0.0);
+}
+#endif
+
+#ifdef IO
+// Volcanic centres by latitude and west longitude: xy position, z: size of the dark patera, w: heat
+const vec4 IO_VOLC[10] = vec4[10](
+  vec4(-18.7, 255.3, 0.035, 1.0),  // Pele: lava lake inside a great red ring
+  vec4(13.0, 309.0, 0.06, 0.9),    // Loki: the largest lava lake
+  vec4(-1.5, 153.0, 0.02, 0.6),    // Prometheus
+  vec4(63.0, 124.0, 0.03, 0.8),    // Tvashtar
+  vec4(24.0, 115.0, 0.02, 0.6),    // Amirani
+  vec4(-28.0, 210.0, 0.02, 0.5),   // Marduk
+  vec4(-8.0, 325.0, 0.02, 0.4),    // Ra
+  vec4(-45.0, 55.0, 0.018, 0.5),   // Masubi
+  vec4(-20.0, 160.0, 0.022, 0.5),  // Culann
+  vec4(18.0, 173.0, 0.018, 0.4)    // Zamama
+);
+
+void bakePlanet(vec3 p, out vec4 col, out vec4 aux) {
+  vec3 w = vec3(fbm(p * 2.0, 4), fbm(p * 2.0 + 5.0, 4), fbm(p * 2.0 + 9.0, 4));
+  float n1 = fbm(p * 3.0 + w * 0.8, 6);
+  float n2 = fbm(p * 7.0 + w * 1.5 + 4.0, 5);
+  // Sulfur in every shade: yellow plains, white sulfur-dioxide frost near the equator, orange and tan patches
+  vec3 c = mix(vec3(0.88, 0.79, 0.40), vec3(0.93, 0.90, 0.75), smoothstep(0.0, 0.45, n1) * (1.0 - smoothstep(0.45, 0.95, abs(p.y))));
+  c = mix(c, vec3(0.87, 0.57, 0.28), smoothstep(0.12, 0.5, n2) * 0.7);
+  c = mix(c, vec3(0.72, 0.60, 0.42), smoothstep(-0.1, -0.45, n1) * 0.6);
+  c = mix(c, vec3(0.70, 0.75, 0.40), smoothstep(0.3, 0.55, fbm(p * 5.0 + 20.0, 4)) * 0.35);
+  // Reddish-brown poles
+  float polar = smoothstep(0.55, 0.85, abs(p.y) + 0.12 * fbm(p * 4.0 + 2.0, 4));
+  c = mix(c, vec3(0.56, 0.38, 0.25), polar * 0.8);
+  float h = fbm(p * 3.0, 6) * 0.04;
+  // A few lonely mountains, steeper than any on Earth
+  h += smoothstep(0.55, 0.8, fbm(p * 6.0 + 30.0, 5)) * 0.08;
+
+  float hot = 0.0;
+  // Hundreds of small paterae: dark lava floors, some with red or white deposits around them
+  vec3 qq = p * 9.0;
+  vec3 ci = floor(qq);
+  vec3 cf = fract(qq);
+  for (int z = -1; z <= 1; z++)
+  for (int y = -1; y <= 1; y++)
+  for (int x = -1; x <= 1; x++) {
+    vec3 o = vec3(float(x), float(y), float(z));
+    vec3 rnd = hash33(ci + o + uSeed);
+    if (rnd.z > 0.4) continue;
+    vec3 cc = o + 0.2 + 0.6 * rnd - cf;
+    float r = 0.06 + 0.12 * fract(rnd.x * 5.3 + rnd.y);
+    float d = length(cc) / r + 0.35 * snoise(p * 60.0 + rnd * 10.0);
+    float halo = exp(-pow((d - 1.6) / 0.7, 2.0)) * step(0.5, fract(rnd.y * 7.1));
+    vec3 haloCol = fract(rnd.x * 3.7) > 0.5 ? vec3(0.78, 0.36, 0.20) : vec3(0.95, 0.93, 0.85);
+    c = mix(c, haloCol, halo * 0.55);
+    float floorM = 1.0 - smoothstep(0.8, 1.0, d);
+    c = mix(c, vec3(0.10, 0.08, 0.06), floorM * 0.9);
+    h -= floorM * 0.01;
+    hot = max(hot, floorM * step(0.75, fract(rnd.y * 13.3)) * 0.5);
+  }
+  // The great volcanoes: plume deposits as rings, lava lakes black and glowing
+  for (int i = 0; i < 10; i++) {
+    vec4 v = IO_VOLC[i];
+    vec3 vc = selDir(v.x, -v.y);
+    float d = angleTo(p, vc) + 0.012 * snoise(p * 40.0 + float(i));
+    if (i == 0 || i == 3) {
+      // Pele and Tvashtar: wide rings of red short-chain sulfur fallen from their umbrella plumes
+      float ring = exp(-pow((d - 0.3) / 0.07, 2.0)) * (0.7 + 0.3 * snoise(p * 18.0));
+      c = mix(c, vec3(0.80, 0.30, 0.16), clamp(ring, 0.0, 1.0) * 0.8);
+    } else {
+      float ring = exp(-pow((d - v.z * 3.0) / (v.z * 1.5), 2.0));
+      c = mix(c, i == 2 ? vec3(0.95, 0.94, 0.88) : vec3(0.72, 0.42, 0.24), ring * 0.6);
+    }
+    float lake = 1.0 - smoothstep(v.z * 0.7, v.z, d);
+    c = mix(c, vec3(0.06, 0.05, 0.04), lake);
+    // Fresh flows: dark tongues running off downhill
+    float flow = (1.0 - smoothstep(v.z, v.z * 4.0, d)) * smoothstep(0.2, 0.6, snoise(p * 25.0 + float(i) * 3.0));
+    c = mix(c, vec3(0.16, 0.12, 0.10), flow * 0.7);
+    hot = max(hot, lake * v.w + flow * v.w * 0.35);
+  }
+  c *= 0.93 + 0.12 * fbm(p * 30.0, 3);
+  col = vec4(c, h);
+  aux = vec4(hot, 0.0, 0.0, 1.0);
+}
+#endif
+
+#ifdef EUROPA
+void bakePlanet(vec3 p, out vec4 col, out vec4 aux) {
+  // Clean water ice, faintly blue-white
+  vec3 ice = vec3(0.90, 0.92, 0.93);
+  vec3 c = ice * (0.94 + 0.08 * fbm(p * 6.0, 4));
+  // The trailing hemisphere is stained tan and red by sulfur raining in from Io's torus
+  float trail = smoothstep(-0.3, 0.9, dot(p, selDir(0.0, 90.0)));
+  c = mix(c, vec3(0.82, 0.70, 0.56), trail * 0.45);
+  vec3 wq = p + 0.08 * vec3(fbm(p * 3.0, 4), fbm(p * 3.0 + 4.0, 4), fbm(p * 3.0 + 8.0, 4));
+  // Chaos terrain: ice rafts broken up and frozen into a brown matrix
+  float mott = fbm(wq * 4.0 + 3.0, 6);
+  float chaos = smoothstep(0.3, 0.5, mott + 0.15 * trail - 0.08);
+  float rafts = smoothstep(0.1, 0.35, fbm(p * 38.0, 4));
+  c = mix(c, vec3(0.64, 0.46, 0.33) * (0.85 + 0.3 * fbm(p * 70.0, 3)), chaos * (0.75 - 0.5 * rafts));
+  // Mottled lowlands: soft brown freckles
+  float freckle = smoothstep(0.25, 0.55, fbm(wq * 9.0 + 40.0, 5)) * (0.4 + 0.6 * trail);
+  c = mix(c, vec3(0.70, 0.55, 0.42), freckle * 0.35);
+
+  // Lineae: long cracks along great circles, reddish brown, many as double ridges with a bright middle
+  float lin = 0.0;
+  float mid = 0.0;
+  for (int i = 0; i < 64; i++) {
+    vec3 r = hash33(vec3(float(i) * 7.13, uSeed + 1.7, 3.1));
+    vec3 r2 = hash33(vec3(float(i) * 3.71, 9.2, uSeed));
+    vec3 n = normalize(r * 2.0 - 1.0);
+    vec3 ax = normalize(cross(n, normalize(r2 * 2.0 - 1.0)));
+    float span = 0.5 + 1.4 * r2.z;
+    float fade = 1.0 - smoothstep(span * 0.6, span, angleTo(p, ax));
+    float dist = abs(dot(p, n) + 0.006 * snoise(p * 7.0 + float(i)));
+    float wdt = 0.002 + 0.005 * r.x;
+    float band = exp(-pow(dist / wdt, 2.0)) * fade;
+    lin = max(lin, band * (0.45 + 0.55 * r.z));
+    mid = max(mid, exp(-pow(dist / (wdt * 0.3), 2.0)) * fade * step(0.45, r.y));
+  }
+  // A finer web of younger cracks
+  float web = (1.0 - smoothstep(0.0, 0.035, abs(snoise(wq * 14.0)))) * smoothstep(-0.2, 0.3, fbm(p * 3.0 + 50.0, 3));
+  web = max(web, (1.0 - smoothstep(0.0, 0.03, abs(snoise(wq * 33.0 + 7.0)))) * 0.6);
+  vec3 lineCol = vec3(0.56, 0.33, 0.21);
+  c = mix(c, lineCol, clamp(lin * 0.8 + web * 0.35 * (1.0 - chaos), 0.0, 1.0));
+  c = mix(c, ice * 1.03, mid * 0.5);
+  // Pwyll: a young crater whose bright rays reach across half the hemisphere
+  vec3 pw = selDir(-25.0, -271.0);
+  c = mix(c, vec3(0.97, 0.96, 0.93), crRays(p, pw, 0.25, 4.0) * 0.5);
+  c = mix(c, vec3(0.45, 0.35, 0.28), 1.0 - smoothstep(0.008, 0.014, angleTo(p, pw)));
+  float h = lin * 0.012 + web * 0.004 - chaos * 0.004 + fbm(p * 8.0, 4) * 0.004 + bowl(p, pw, 0.012) * 0.3;
+  col = vec4(c, h);
+  aux = vec4(0.0);
+}
+#endif
+
+#ifdef TITAN
+void bakePlanet(vec3 p, out vec4 col, out vec4 aux) {
+  float n = fbm(p * 2.5, 6);
+  float latD = degrees(asin(clamp(p.y, -1.0, 1.0)));
+  vec3 c = mix(vec3(0.40, 0.29, 0.17), vec3(0.60, 0.47, 0.30), smoothstep(-0.2, 0.3, n));
+  // Dark dune seas around the equator, the dunes running east-west
+  float dunes = exp(-pow(latD / 24.0, 2.0)) * smoothstep(-0.1, 0.25, fbm(p * 1.8 + 4.0, 4));
+  float ripples = 0.75 + 0.25 * sin(latD * 9.0 + 4.0 * fbm(p * 6.0, 3));
+  c = mix(c, vec3(0.19, 0.13, 0.09) * ripples, dunes * 0.85);
+  // Xanadu, the bright highland
+  float xan = 1.0 - smoothstep(0.25, 0.45, angleTo(p, selDir(-10.0, -100.0)) + 0.12 * fbm(p * 5.0, 4));
+  c = mix(c, vec3(0.74, 0.62, 0.45), xan);
+  // Lakes and seas of liquid methane and ethane around the north pole, a few in the south
+  float north = smoothstep(55.0, 75.0, latD + 12.0 * fbm(p * 3.0 + 9.0, 4));
+  float south = smoothstep(-72.0, -82.0, latD) * 0.6;
+  float seas = smoothstep(0.05, 0.12, fbm(p * 4.0 + 17.0, 5) + 0.25 * north - 0.2) * max(north, south);
+  c = mix(c, vec3(0.03, 0.035, 0.04), seas);
+  col = vec4(c, seas);
+  aux = vec4(0.0);
+}
+#endif
 
 #ifdef EARTH
 void bakePlanet(vec3 p, out vec4 col, out vec4 aux) {
@@ -527,12 +806,42 @@ void bakePlanet(vec3 p, out vec4 col, out vec4 aux) {
 }
 #endif
 
+// Pass 2, read back by the CPU for flights over the ground: rg = height (16 bit, scaled into uGroundRange),
+// b = open water, a = cloud cover. Venus's map shows only its cloud deck, so its ground is made up here.
+uniform vec2 uGroundRange;
+vec4 groundData(vec3 p, vec4 col, vec4 aux) {
+  float h = 0.0;
+  float water = 0.0;
+  float cloud = 0.0;
+#if defined(EARTH)
+  h = aux.b / 1.6;
+  water = col.a;
+  cloud = aux.g;
+#elif defined(HEIGHT_IN_ALPHA)
+  h = col.a;
+#elif defined(VENUS)
+  // Volcanic plains, a few great shield volcanoes, folded highlands
+  vec3 warp = vec3(fbm(p * 1.6 + 3.0, 4), fbm(p * 1.6 + 7.0, 4), fbm(p * 1.6 + 1.0, 4));
+  float plains = fbm(p * 2.2 + warp * 0.5, 7) * 0.22;
+  float highland = smoothstep(0.1, 0.35, fbm(p * 1.3 + 9.0, 4));
+  float tesserae = ridged(p * 6.0 + warp, 6) * 0.35 * highland;
+  float volcano = exp(-pow(distance(p, dirAt(25.0, -150.0)) / 0.09, 2.0)) * 0.55
+                + exp(-pow(distance(p, dirAt(-20.0, 60.0)) / 0.07, 2.0)) * 0.4
+                + exp(-pow(distance(p, dirAt(5.0, 10.0)) / 0.06, 2.0)) * 0.35;
+  h = plains + highland * 0.18 + tesserae + volcano;
+#endif
+  float hn = clamp((h - uGroundRange.x) / (uGroundRange.y - uGroundRange.x), 0.0, 1.0);
+  float v = floor(hn * 65535.0 + 0.5);
+  float hi = floor(v / 256.0);
+  return vec4(hi / 255.0, (v - hi * 256.0) / 255.0, water, cloud);
+}
+
 void main() {
   vec3 p = dirFromUV(vUv);
   vec4 col;
   vec4 aux;
   bakePlanet(p, col, aux);
-  gl_FragColor = uPass == 0 ? col : aux;
+  gl_FragColor = uPass == 2 ? groundData(p, col, aux) : uPass == 0 ? col : aux;
 }
 `;
 
@@ -563,6 +872,38 @@ void main() {
 }
 `;
 
+// Eclipses: how much sunlight reaches a point when moons (or the planet, for a moon) stand in front of the Sun.
+// Discs compared by apparent size: umbra, penumbra, or an annular eclipse where the body is too small.
+// In a full shadow only light bent through the caster's air arrives (a blood-red Moon in Earth's shadow).
+const ECLIPSE_GLSL = /* glsl */ `
+uniform vec4 uCasters[4];  // xyz: centre relative to this body, world orientation; w: radius (0 = unused)
+uniform float uSunAng;     // angular radius of the Sun seen from this body
+uniform vec3 uUmbraTint;
+uniform vec3 uShineDir;
+uniform vec3 uShineCol;
+vec3 eclipse(vec3 P, vec3 L) {
+  float vis = 1.0;
+  for (int i = 0; i < 4; i++) {
+    vec4 cs = uCasters[i];
+    if (cs.w <= 0.0) continue;
+    vec3 toC = cs.xyz - P;
+    float t = dot(toC, L);
+    if (t <= 0.0) continue;
+    float sep = length(toC - L * t) / t;
+    float ang = cs.w / t;
+    float s = 1.0;
+    if (sep >= uSunAng + ang) s = 1.0;
+    else if (ang >= uSunAng && sep <= ang - uSunAng) s = 0.0;
+    else {
+      float covered = min(1.0, (ang / uSunAng) * (ang / uSunAng));
+      s = 1.0 - covered * (1.0 - smoothstep(abs(ang - uSunAng), uSunAng + ang, sep));
+    }
+    vis = min(vis, s);
+  }
+  return mix(uUmbraTint, vec3(1.0), vis);
+}
+`;
+
 const BODY_UNIFORMS = /* glsl */ `
 uniform vec3 uSunDir;
 uniform vec3 uCamLocal;
@@ -577,7 +918,7 @@ varying vec3 vEast;
 varying vec3 vNorth;
 `;
 
-export const SURFACE_FRAGMENT = NOISE_GLSL + BODY_UNIFORMS + /* glsl */ `
+export const SURFACE_FRAGMENT = NOISE_GLSL + BODY_UNIFORMS + ECLIPSE_GLSL + /* glsl */ `
 #include <logdepthbuf_pars_fragment>
 uniform sampler2D uColorMap;
 uniform sampler2D uAuxMap;
@@ -611,8 +952,10 @@ void main() {
 
   float ocean = 0.0;
   vec4 aux = vec4(0.0);
-#ifdef EARTH
+#if defined(EARTH) || defined(IO)
   aux = texture2D(uAuxMap, uv);
+#endif
+#ifdef EARTH
   ocean = tex.a;
 #endif
 
@@ -668,8 +1011,18 @@ void main() {
 
   float geo = dot(n, L);
   float lit = max(dot(N, L), 0.0) * smoothstep(-0.03, 0.08, geo);
-  vec3 sun = vec3(1.0, 0.97, 0.93) * uLight;
+  vec3 shade = eclipse(vRel, L);
+  vec3 sun = vec3(1.0, 0.97, 0.93) * uLight * shade;
   vec3 color = albedo * sun * lit;
+  // Earthshine on the Moon, Jupiter-shine on its moons: the ashen glow of the night side
+  color += albedo * uShineCol * max(dot(N, uShineDir), 0.0);
+
+#ifdef IO
+  // Lava lakes glow orange-red, plain to see on the night side and in Jupiter's shadow
+  float dark = 1.0 - clamp(lit * dot(shade, vec3(0.333)) * 1.5, 0.0, 1.0);
+  float flicker = 0.85 + 0.15 * sin(uTime * 2.3 + aux.r * 37.0) * sin(uTime * 0.7 + o.x * 20.0);
+  color += vec3(1.0, 0.30, 0.05) * aux.r * (0.12 + 1.8 * dark) * flicker;
+#endif
 
 #ifdef GAS
   // Limb darkening of a deep atmosphere
@@ -725,7 +1078,7 @@ void main() {
 }
 `;
 
-export const CLOUD_FRAGMENT = NOISE_GLSL + BODY_UNIFORMS + /* glsl */ `
+export const CLOUD_FRAGMENT = NOISE_GLSL + BODY_UNIFORMS + ECLIPSE_GLSL + /* glsl */ `
 #include <logdepthbuf_pars_fragment>
 #define ATMO_STEPS 6
 uniform sampler2D uAuxMap;
@@ -747,7 +1100,7 @@ void main() {
   float geo = dot(n, L);
   // Cloud tops stay lit a little past the ground's terminator
   float lit = clamp((geo + 0.12) / 1.12, 0.0, 1.0) * smoothstep(-0.12, 0.04, geo);
-  vec3 color = vec3(0.92, 0.93, 0.95) * uLight * lit * (0.8 + 0.2 * cover) + vec3(0.004);
+  vec3 color = vec3(0.92, 0.93, 0.95) * uLight * lit * (0.8 + 0.2 * cover) * eclipse(vRel, L) + vec3(0.004);
   vec3 inscatter;
   vec3 transmit;
   atmosphere(uCamLocal, -toCam / camDist, camDist, L, uRadius, inscatter, transmit);

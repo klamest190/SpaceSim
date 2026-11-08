@@ -1,7 +1,4 @@
 import { controls } from './controls';
-import { spaceAudio } from './audio';
-
-const CHARS_PER_SECOND = 45;
 
 // Guided first flight: each step waits for the pilot to actually do the thing
 const STEPS = [
@@ -23,25 +20,16 @@ const STEPS = [
   }
 ];
 
-const FINAL_TEXT = 'Willkommen im Geschäft. Anvisieren und X bringt dich überall hin, T schaltet durch die Ziele, N öffnet die Navkarte. Mit dem Mausrad zoomst du aus dem Cockpit raus. Quantenchips und Eis bringen auf dem Mars gutes Geld.';
-const WELCOME_BACK_TEXT = 'Flugleitung Erde: Willkommen zurück. Die Erde-Station ist als Ziel erfasst.';
+const FINAL_TEXT = 'Willkommen im Geschäft. Anvisieren und X bringt dich überall hin, N öffnet die Navkarte, I das Logbuch. Auf jeder Station kannst du herumlaufen: In der Bar, an der Börse und im Auftragsbüro warten Leute, Geschäfte und Arbeit. Die Kreditbank findest du am SOLPOL-Schalter. Und Vorsicht: Außerhalb der Sicherheitszonen jagt der Aschebund.';
+const WELCOME_BACK_TEXT = 'Flugleitung: Willkommen zurück, Pilot. Die Heimatstation ist als Ziel erfasst.';
 
 export class Tutorial {
   constructor(game) {
     this.game = game;
-    this.el = document.getElementById('comm-vdu');
-    this.textEl = document.getElementById('comm-text');
-    this.reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
     this.active = false;
     this.step = 0;
     this.mouseTravel = 0;
     this.pendingFinal = false;
-
-    this.fullText = '';
-    this.revealed = 0;
-    this.hideAt = null;
-    this.lastTime = performance.now();
   }
 
   start(alreadyDone) {
@@ -56,40 +44,19 @@ export class Tutorial {
     this.say(STEPS[0].text);
   }
 
-  // Show a radio message; duration in ms, or null to keep it until replaced
+  // Flight control on the radio; duration in ms, or null to keep it until replaced
   say(text, duration = null) {
-    this.fullText = text;
-    this.revealed = this.reducedMotion ? text.length : 0;
-    this.textEl.textContent = this.reducedMotion ? text : '';
-    this.hideAt = duration ? performance.now() + duration : null;
-    this.el.classList.remove('hidden');
-    spaceAudio.playBeep();
+    this.game.comm.say(text, { speaker: this.active ? 'Flugleitung Erde' : 'Flugleitung', faction: 'control', seed: 3, duration, urgent: this.active });
   }
 
   onDocked() {
     if (!this.active) return;
     this.active = false;
     this.pendingFinal = true;
-    this.el.classList.add('hidden');
     this.game.saveProgress({ tutorialDone: true });
   }
 
   update(ship, dockable) {
-    const now = performance.now();
-    const dt = Math.min(0.1, (now - this.lastTime) / 1000);
-    this.lastTime = now;
-
-    // Typewriter reveal
-    if (this.revealed < this.fullText.length) {
-      this.revealed = Math.min(this.fullText.length, this.revealed + dt * CHARS_PER_SECOND);
-      this.textEl.textContent = this.fullText.slice(0, Math.floor(this.revealed));
-    }
-
-    if (this.hideAt && now >= this.hideAt) {
-      this.hideAt = null;
-      this.el.classList.add('hidden');
-    }
-
     if (this.pendingFinal && !ship.isDocked) {
       this.pendingFinal = false;
       this.say(FINAL_TEXT, 16000);

@@ -2,16 +2,35 @@ import * as THREE from 'three';
 import { controls } from './controls';
 import { spaceAudio } from './audio';
 import { atmosphereTop } from './solarSystem';
+import { difficultyOf } from './difficulty';
 import { ShipModel, GUN_MUZZLES } from './shipModel';
+import { interceptPoint, BOLT_COLORS } from './combat';
+import { emptyCargo, STARTING_DEBT, SUBSYSTEMS } from './world';
+import { sfx } from './sfx';
 
-const DOCK_STANDOFF = 1.5;    // closest the pilot can glide in to a station, away from its planet
-export const STATION_HOLD_STANDOFF = 4.0; // the autopilot waits here: outside docking range (2.5), the pilot glides in
-const STATION_CLEARANCE = 3.0;   // the autopilot's approach stays this far from a station, clear of docking range
-const STANDOFF_GLIDE_SPEED = 1.5; // units/s the pilot closes or opens the gap to a held station with W / S
-const DEPARTURE_RANGE = 4.5;  // closer than this to the station, cancelling counts as undocking
-const DEPARTURE_SPEED = 6.0;  // units/s outward push when the autopilot lets go of a station
+const STANDOFF_GLIDE_SPEED = 2.5; // units/s the pilot closes or opens the gap to a held station with W / S
+const DEPARTURE_SPEED = 10.0;  // units/s outward push when the autopilot lets go of a station
 const DEPARTURE_TIME = 2.0;   // seconds of push before gravity and the stabilizer take over again
 const HOLD_RELEASE_MOUSE = 10; // pixels of mouse movement in one frame that count as steering away from a hold
+const BOLT_SPEED = 300;
+const GUN_RANGE = 420;
+const AIM_ASSIST = THREE.MathUtils.degToRad(2.6); // the guns gimbal this far onto the lead point
+const SHIELD_DELAY = 3.0;      // seconds after a hit before shields recharge
+const STICK_RESPONSE = 13;     // how quickly the nose follows the mouse
+const STICK_LIMIT = 0.5;       // radians of steering the mouse can queue up
+const BOOST_DRAIN = 26;
+const BOOST_RECHARGE = 13;
+const BOOST_SPEED = 1.7;
+
+// Stations differ in size, so the distances around them follow: waiting point, docking range, closest approach
+export const stationHoldStandoff = (st) => st.size + 24;
+export const stationDockRange = (st) => st.size + 13;
+const stationMinStandoff = (st) => st.size + 8;
+const stationClearance = (st) => st.size + 7;
+const departureRange = (st) => st.size + 26;
+
+// Where the pilot's mouse settings live; the pause menu writes them
+export const pilotSettings = { sensitivity: 1, invertY: false };
 
 // Radius of a body's gravity field (also the range in which it is the stabilizer's reference frame)
 export function gravityRadius(p) {
@@ -25,7 +44,7 @@ export function planetHoldDistance(p) {
 
 // Closer than this to an object, flying there would get you nowhere: you have already arrived
 export function arrivalRadius(obj) {
-  if (obj.kind === 'station') return 5;
+  if (obj.kind === 'station') return stationHoldStandoff(obj) + 1;
   const radius = obj.mesh ? obj.mesh.scale.x : 1;
   return obj.group ? Math.max(radius + 12, planetHoldDistance(obj) + 2) : radius + 12;
 }
@@ -34,7 +53,12 @@ export class Spaceship {
   constructor(scene, renderer = null) {
     this.renderer = renderer;
     this.scene = scene;
-    
+    this.game = null; // set by the game right after construction
+    this.isPlayer = true;
+    this.faction = 'player';
+    this.name = 'SOL 4471';
+    this.radius = 1.8;
+
     // Warp state flag for cinematic autopilot bypass
     this.isWarping = false;
     
@@ -43,18 +67,41 @@ export class Spaceship {
     
     // Campaign State & Upgrades
     this.credits = 1000;
-    this.cargo = {
-      ore: 0,
-      ice: 0,
-      tech: 0
-    };
-    
+    this.debt = STARTING_DEBT;
+    this.cargo = emptyCargo();
+    this.missionCargoWeight = 0;
+
     this.upgrades = {
-      engine: 1,  // Max Speed & Acceleration
+      engine: 1,  // Max Speed, Acceleration & Turn Rate
       shield: 1,  // Max Shield & Shield Recharge Rate
-      weapon: 1,  // Cooldown & Weapon Energy Cost
-      cargo: 1    // Max Cargo Capacity
+      weapon: 1,  // Damage, Cooldown & Weapon Energy Cost
+      cargo: 1,   // Max Cargo Capacity
+      armor: 1,   // Max Hull, resistance of the subsystems
+      sensor: 1   // Radar range, lock speed
     };
+
+    // Shield quadrants (read and written as one total through the shield property), hull and subsystems
+    this.shields = { f: 0, b: 0, l: 0, r: 0 };
+    this.shieldDelay = 0;
+    this.hull = 100;
+    this.systems = { engine: 1, weapons: 1, sensors: 1, warp: 1 };
+    this.fuel = 100;
+    this.maxFuel = 100;
+    this.missiles = 2;
+    this.maxMissiles = 6;
+    this.flares = 4;
+    this.maxFlares = 10;
+    this.boost = 100;
+    this.boosting = false;
+    this.lockProgress = 0;
+    this.lockTick = 0;
+    this.locked = false;
+    this.incomingMissiles = 0;
+    this.missileAlarm = 0;
+    this.shake = 0;
+    this.lastHullHit = 0;
+    this.dockedAt = null;
+    this.stick = { x: 0, y: 0 };
     
     // Physical state
     this.position = new THREE.Vector3(0, 0, 80); // Start near Earth (Z=80)
@@ -91,7 +138,7 @@ export class Spaceship {
     this.stationHold = null;
     this.planetHold = null;
     this.holdTarget = null;
-    this.holdStandoff = STATION_HOLD_STANDOFF;
+    this.holdStandoff = null;
 
     // Docking State
     this.isDocked = false;
@@ -99,9 +146,6 @@ export class Spaceship {
     // Weapons State
     this.weaponEnergy = 100;
     this.fireCooldown = 0;
-    this.laserBolts = [];
-    this.laserGroup = new THREE.Group();
-    this.scene.add(this.laserGroup);
     
     // Targets
     this.targetObject = null;
@@ -118,9 +162,10 @@ export class Spaceship {
     
     // Apply stats from current upgrades
     this.applyUpgrades();
-    
-    // Start with full shield
+
+    // Start with full shield and hull
     this.shield = this.maxShield;
+    this.hull = this.maxHull;
     
     // Ship model setup
     this.mesh = this.createSpaceshipMesh();
@@ -144,33 +189,37 @@ export class Spaceship {
     // 1. Engine
     const engineTier = this.upgrades.engine;
     if (engineTier === 1) {
-      this.maxSpeed = 30;
+      this.maxSpeed = 32;
       this.acceleration = 36;
+      this.turnRate = 1.5;
     } else if (engineTier === 2) {
-      this.maxSpeed = 44;
-      this.acceleration = 50;
+      this.maxSpeed = 40;
+      this.acceleration = 48;
+      this.turnRate = 1.8;
     } else if (engineTier === 3) {
-      this.maxSpeed = 60;
-      this.acceleration = 68;
+      this.maxSpeed = 50;
+      this.acceleration = 62;
+      this.turnRate = 2.1;
     } else {
-      this.maxSpeed = 80;
-      this.acceleration = 92;
+      this.maxSpeed = 62;
+      this.acceleration = 80;
+      this.turnRate = 2.5;
     }
 
     // 2. Shield
     const shieldTier = this.upgrades.shield;
     if (shieldTier === 1) {
       this.maxShield = 100;
-      this.shieldRecharge = 2; // units/s
+      this.shieldRecharge = 5; // units/s
     } else if (shieldTier === 2) {
       this.maxShield = 150;
-      this.shieldRecharge = 4.5;
+      this.shieldRecharge = 7.5;
     } else if (shieldTier === 3) {
       this.maxShield = 220;
-      this.shieldRecharge = 8;
+      this.shieldRecharge = 11;
     } else {
       this.maxShield = 320;
-      this.shieldRecharge = 14;
+      this.shieldRecharge = 16;
     }
 
     // 3. Weapon (Fire cooldown rate, energy cost)
@@ -178,15 +227,19 @@ export class Spaceship {
     if (weaponTier === 1) {
       this.fireRate = 0.18;
       this.laserEnergyCost = 10;
+      this.laserDamage = 6;
     } else if (weaponTier === 2) {
       this.fireRate = 0.15;
       this.laserEnergyCost = 8.5;
+      this.laserDamage = 7.5;
     } else if (weaponTier === 3) {
       this.fireRate = 0.12;
       this.laserEnergyCost = 7;
+      this.laserDamage = 9;
     } else {
       this.fireRate = 0.09; // rapid fire!
       this.laserEnergyCost = 5.5;
+      this.laserDamage = 11;
     }
 
     // 4. Cargo
@@ -201,12 +254,106 @@ export class Spaceship {
       this.maxCargo = 120;
     }
 
+    // 5. Armor and sensors
+    this.maxHull = [100, 150, 215, 300][this.upgrades.armor - 1];
+    this.hull = Math.min(this.hull, this.maxHull);
+    this.sensorRange = [2200, 3000, 4000, 5500][this.upgrades.sensor - 1];
+    this.lockTime = [1.9, 1.55, 1.25, 0.95][this.upgrades.sensor - 1];
+
     // Clamp shield to new max
     if (this.shield > this.maxShield) this.shield = this.maxShield;
   }
 
+  get shield() {
+    const s = this.shields;
+    return s.f + s.b + s.l + s.r;
+  }
+
+  set shield(value) {
+    const s = this.shields;
+    const q = Math.max(0, value) / 4;
+    const before = this.shield;
+    if (value < before && before > 0) {
+      // Taken off all sides in proportion
+      const k = Math.max(0, value) / before;
+      s.f *= k; s.b *= k; s.l *= k; s.r *= k;
+    } else {
+      s.f = s.b = s.l = s.r = q;
+    }
+  }
+
+  // Common entity interface, shared with AI ships: the combat code doesn't care who is who
+  get pos() { return this.position; }
+  get vel() { return this.velocity; }
+  get alive() { return !this.isDestroyed && !this.isDocked && !this.isWarping; }
+
+  // Down in a planet's atmosphere (see surface.js): the guns and the autopilot stay safed
+  get inAtmosphere() { return !!(this.game && this.game.surface && this.game.surface.active); }
+
   getCurrentCargoWeight() {
-    return this.cargo.ore + this.cargo.ice + this.cargo.tech;
+    return Object.values(this.cargo).reduce((a, b) => a + b, 0) + this.missionCargoWeight;
+  }
+
+  // 0 for a stock ship, 1 for a fully upgraded one: the world's dangers scale with this
+  powerLevel() {
+    const u = this.upgrades;
+    return (u.engine + u.shield + u.weapon + u.armor - 4) / 12;
+  }
+
+  // Top speed with a damaged engine and any afterburner
+  speedLimit() {
+    return this.maxSpeed * (0.45 + 0.55 * this.systems.engine) * (this.speedScale || 1);
+  }
+
+  // A hit, from whoever. Shields first, on the side that was struck; what gets through hits the hull and maybe a subsystem.
+  applyHit(damage, point, attacker, boltVel, kind) {
+    if (!this.alive) return;
+    const { fx, hud } = this.game;
+    damage *= difficultyOf(this.game).damageTaken;
+    const local = point.clone().sub(this.position).applyQuaternion(this.quaternion.clone().invert());
+    const absX = Math.abs(local.x), absZ = Math.abs(local.z);
+    const quad = absZ >= absX ? (local.z < 0 ? 'f' : 'b') : (local.x < 0 ? 'l' : 'r');
+    const pan = THREE.MathUtils.clamp(local.x / Math.max(local.length(), 0.01), -0.8, 0.8);
+
+    let rest = damage;
+    const absorbed = Math.min(this.shields[quad], rest);
+    this.shields[quad] -= absorbed;
+    rest -= absorbed;
+    this.shieldDelay = SHIELD_DELAY;
+    hud.damageFrom(local, rest > 0);
+
+    if (absorbed > 0) {
+      fx.shieldFlash(this, this.radius * 1.6, point, 0x70c0ff);
+      this.shake = Math.max(this.shake, 0.18);
+      sfx.shieldHit(pan);
+    }
+    if (rest > 0) {
+      this.hull -= rest;
+      this.lastHullHit = performance.now();
+      fx.hullHit(point, this.velocity);
+      this.shake = Math.max(this.shake, Math.min(1, 0.4 + rest * 0.03));
+      sfx.hullHit(pan);
+      this.damageSystems(rest);
+    }
+    if (kind === 'missile') this.shake = 1;
+    if (this.hull <= 0) this.game.triggerShipExplosion(attacker && attacker.name ? attacker.name : 'Feindfeuer');
+  }
+
+  damageSystems(amount) {
+    const resist = 1.15 - this.upgrades.armor * 0.15;
+    if (Math.random() > Math.min(0.7, amount * 0.03) * resist) return;
+    const keys = Object.keys(this.systems);
+    const key = keys[Math.floor(Math.random() * keys.length)];
+    const before = this.systems[key];
+    this.systems[key] = Math.max(0, before - (0.12 + Math.random() * 0.22));
+    if (before >= 0.35 && this.systems[key] < 0.35) this.game.hud.toast(`${SUBSYSTEMS[key]} schwer beschädigt!`, 'bad');
+  }
+
+  // Everything in working order again
+  fullRepair() {
+    this.hull = this.maxHull;
+    Object.keys(this.systems).forEach((k) => { this.systems[k] = 1; });
+    this.shield = this.maxShield;
   }
 
   createSpaceshipMesh() {
@@ -232,18 +379,32 @@ export class Spaceship {
       return;
     }
 
-    // 1. If docked, freeze physics entirely
+    // 1. If docked, freeze physics entirely and ride along with the station
     if (this.isDocked) {
       this.velocity.set(0, 0, 0);
       this.rotationSpeed.pitch = 0;
       this.rotationSpeed.yaw = 0;
       this.rotationSpeed.roll = 0;
+      if (this.dockedAt) {
+        this.position.copy(this.stationDockPoint(this.dockedAt, stationHoldStandoff(this.dockedAt), solarSystem));
+        this.mesh.position.copy(this.position);
+      }
       this.updateWeapons(delta);
       return;
     }
 
-    // 2. Shield auto recharge
-    this.shield = Math.min(this.maxShield, this.shield + delta * this.shieldRecharge);
+    // 2. Shield recharge: each quadrant fills on its own, after a short pause since the last hit
+    if (this.shieldDelay > 0) {
+      this.shieldDelay -= delta;
+    } else {
+      const quarter = this.maxShield / 4;
+      const fill = (delta * this.shieldRecharge) / 4;
+      Object.keys(this.shields).forEach((q) => { this.shields[q] = Math.min(quarter, this.shields[q] + fill); });
+    }
+    this.shake = Math.max(0, this.shake - delta * 2.2);
+    this.updateBoost(delta);
+    this.updateLock(delta);
+    this.updateMissileAlarm(delta);
 
     // 3. Update weapons
     this.updateWeapons(delta);
@@ -261,11 +422,12 @@ export class Spaceship {
     // backing out past the waiting point with S lets go, so the hold is never a trap.
     const throttleInput = controls.keys.throttleUp || controls.keys.throttleDown;
     if (this.autopilotActive && throttleInput && this.holdTarget === this.targetObject) {
-      if (this.stationHold && controls.keys.throttleDown && this.holdStandoff >= STATION_HOLD_STANDOFF) {
+      const station = this.targetObject;
+      if (this.stationHold && controls.keys.throttleDown && this.holdStandoff >= stationHoldStandoff(station)) {
         this.toggleAutopilot();
       } else if (this.stationHold) {
         const glide = (controls.keys.throttleDown ? 1 : -1) * STANDOFF_GLIDE_SPEED * delta;
-        this.holdStandoff = THREE.MathUtils.clamp(this.holdStandoff + glide, DOCK_STANDOFF, STATION_HOLD_STANDOFF);
+        this.holdStandoff = THREE.MathUtils.clamp(this.holdStandoff + glide, stationMinStandoff(station), stationHoldStandoff(station));
       } else if (this.planetHold || this.isStationApproach()) {
         this.toggleAutopilot();
       }
@@ -305,25 +467,12 @@ export class Spaceship {
       this.fireCooldown -= delta;
     }
     
-    this.weaponEnergy = Math.min(100, this.weaponEnergy + delta * 22);
+    this.weaponEnergy = Math.min(100, this.weaponEnergy + delta * 22 * (0.4 + 0.6 * this.systems.weapons));
 
     // Cannot shoot if docked, warping, or destroyed
     if (controls.keys.shoot && this.fireCooldown <= 0 && this.weaponEnergy >= this.laserEnergyCost && !this.autopilotActive && !this.isDocked && !this.isWarping && !this.isDestroyed) {
-      this.fireLasers();
-    }
-
-    for (let i = this.laserBolts.length - 1; i >= 0; i--) {
-      const bolt = this.laserBolts[i];
-      bolt.life -= delta;
-      
-      if (bolt.life <= 0) {
-        this.laserGroup.remove(bolt.mesh);
-        bolt.mesh.geometry.dispose();
-        bolt.mesh.material.dispose();
-        this.laserBolts.splice(i, 1);
-      } else {
-        bolt.mesh.position.add(bolt.velocity.clone().multiplyScalar(delta));
-      }
+      if (this.inAtmosphere) this.weaponsSafed();
+      else this.fireLasers();
     }
 
     if (this.shootFlashActive) {
@@ -336,8 +485,16 @@ export class Spaceship {
     }
   }
 
+  weaponsSafed() {
+    const now = performance.now();
+    if (now - (this.lastSafedNote || 0) < 2500) return;
+    this.lastSafedNote = now;
+    sfx.denied();
+    this.game.hud.toast('Waffen gesichert: kein Feuer in der Atmosphäre', 'warn');
+  }
+
   fireLasers() {
-    this.fireCooldown = this.fireRate; // scales with upgrades
+    this.fireCooldown = this.fireRate / (0.4 + 0.6 * this.systems.weapons); // scales with upgrades, slows when damaged
     this.weaponEnergy -= this.laserEnergyCost;
     spaceAudio.playLaserFire();
 
@@ -347,30 +504,106 @@ export class Spaceship {
     document.getElementById('laser-flash-r').style.opacity = 0.95;
 
     const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.quaternion);
-    const positions = GUN_MUZZLES.map((m) => m.clone().applyQuaternion(this.quaternion).add(this.position));
-
-    const boltSpeed = 250;
-    const velocityVec = forward.clone().multiplyScalar(boltSpeed);
-
-    positions.forEach(pos => {
-      const boltGeom = new THREE.CylinderGeometry(0.035, 0.035, 2.2, 4);
-      boltGeom.rotateX(Math.PI / 2);
-      // HDR red (>1.0) so the bloom pass makes the bolts glow
-      const boltMat = new THREE.MeshBasicMaterial({
-        color: new THREE.Color(4.0, 0.35, 0.25),
-      });
-
-      const mesh = new THREE.Mesh(boltGeom, boltMat);
-      mesh.position.copy(pos);
-      mesh.quaternion.copy(this.quaternion);
-      
-      this.laserGroup.add(mesh);
-      this.laserBolts.push({
-        mesh: mesh,
-        velocity: velocityVec,
-        life: 1.5
-      });
+    // Guns converge on the lead point when it is close enough to the crosshair, otherwise far ahead
+    const lead = this.leadPoint();
+    const assisted = lead && forward.angleTo(lead.clone().sub(this.position)) < AIM_ASSIST;
+    const aim = assisted ? lead : this.position.clone().addScaledVector(forward, GUN_RANGE * 0.6);
+    GUN_MUZZLES.forEach((m) => {
+      const pos = m.clone().applyQuaternion(this.quaternion).add(this.position);
+      const dir = aim.clone().sub(pos).normalize();
+      this.game.combat.fireBolt(this, pos, dir, { speed: BOLT_SPEED, damage: this.laserDamage, life: GUN_RANGE / BOLT_SPEED, color: BOLT_COLORS.player, width: 0.055, length: 3 });
     });
+  }
+
+  // Where to shoot to hit the current target, for the gunsight's lead pip; null without a ship targeted
+  leadPoint() {
+    const t = this.targetObject;
+    if (!t || t.kind !== 'npc' || !t.alive) return null;
+    const rel = new THREE.Vector3().subVectors(t.vel, this.velocity);
+    return interceptPoint(this.position, t.pos, rel, BOLT_SPEED, new THREE.Vector3());
+  }
+
+  updateBoost(delta) {
+    const wants = controls.keys.boost && !this.autopilotActive && !this.isWarping && this.boost > 1;
+    this.boosting = wants && (this.boost > 12 || this.boosting);
+    if (this.boosting) this.boost = Math.max(0, this.boost - BOOST_DRAIN * delta);
+    else this.boost = Math.min(100, this.boost + BOOST_RECHARGE * delta);
+  }
+
+  // Keep the target inside the seeker's cone and the missile locks on
+  updateLock(delta) {
+    const t = this.targetObject;
+    let tracking = false;
+    if (t && t.kind === 'npc' && t.alive && this.missiles > 0 && !this.autopilotActive && !this.inAtmosphere) {
+      const to = t.pos.clone().sub(this.position);
+      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.quaternion);
+      tracking = to.length() < this.sensorRange * 0.45 && forward.angleTo(to) < 0.45;
+    }
+    if (tracking) {
+      const before = this.lockProgress;
+      this.lockProgress = Math.min(1, this.lockProgress + (delta / this.lockTime) * (0.4 + 0.6 * this.systems.sensors));
+      this.lockTick -= delta;
+      if (this.lockProgress < 1 && this.lockTick <= 0) {
+        this.lockTick = 0.28 - this.lockProgress * 0.2;
+        sfx.lockTick();
+      }
+      if (before < 1 && this.lockProgress >= 1) {
+        this.locked = true;
+        sfx.lockOn();
+      }
+    } else {
+      if (this.locked) sfx.lockLost();
+      this.locked = false;
+      this.lockProgress = Math.max(0, this.lockProgress - delta * 1.5);
+    }
+  }
+
+  updateMissileAlarm(delta) {
+    if (this.incomingMissiles > 0) {
+      this.missileAlarm -= delta;
+      if (this.missileAlarm <= 0) {
+        this.missileAlarm = 0.55;
+        sfx.missileAlarmTick();
+      }
+    } else {
+      this.missileAlarm = 0;
+    }
+  }
+
+  // Right mouse button (or V): a missile drops off the next wing pylon. Locked on, it goes for the target;
+  // without a lock its seeker picks up whatever hostile is ahead once the motor lights.
+  launchMissile() {
+    if (this.inAtmosphere) return this.weaponsSafed();
+    const now = performance.now();
+    if (this.missiles <= 0 || this.autopilotActive || this.isWarping || !this.alive || now - (this.lastLaunch || 0) < 450) {
+      sfx.denied();
+      return;
+    }
+    this.lastLaunch = now;
+    this.missiles--;
+    this.pylon = this.pylon === 1 ? -1 : 1;
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.quaternion);
+    const down = new THREE.Vector3(0, -1, 0).applyQuaternion(this.quaternion);
+    const side = new THREE.Vector3(this.pylon, 0, 0).applyQuaternion(this.quaternion);
+    const from = this.position.clone().addScaledVector(side, 0.95).addScaledVector(down, 0.45).addScaledVector(forward, 0.1);
+    const eject = down.clone().multiplyScalar(0.9).addScaledVector(side, 0.25).normalize();
+    const target = this.locked ? this.targetObject : null;
+    const missile = this.game.combat.fireMissile(this, from, forward, target, { damage: 75, profile: 'player', eject });
+    this.game.missileCam.follow(missile);
+    sfx.missileRelease(this.pylon * 0.5);
+    this.lockProgress = 0;
+    this.locked = false;
+    this.shake = Math.max(this.shake, 0.12);
+  }
+
+  dropFlare() {
+    if (this.inAtmosphere) return this.weaponsSafed();
+    if (this.flares <= 0 || !this.alive) {
+      sfx.denied();
+      return;
+    }
+    this.flares--;
+    this.game.combat.dropFlare(this);
   }
 
   handleScrollZoom() {
@@ -396,6 +629,11 @@ export class Spaceship {
 
   toggleAutopilot() {
     if (this.isDocked || this.isWarping || this.isDestroyed) return;
+    if (this.inAtmosphere) {
+      spaceAudio.playAutopilotAlert(false);
+      this.game.hud.toast('Autopilot nur im Orbit: steig aus der Atmosphäre', 'warn');
+      return;
+    }
     if (!this.autopilotActive && !this.targetObject) {
       spaceAudio.playAutopilotAlert(false);
       return;
@@ -421,13 +659,13 @@ export class Spaceship {
     this.stationHold = null;
     this.planetHold = null;
     this.holdTarget = null;
-    this.holdStandoff = STATION_HOLD_STANDOFF;
+    this.holdStandoff = null;
     this.lastDockPoint = null; // stale samples would turn into a huge dock-point velocity
   }
 
   isStationApproach() {
     if (!this.targetObject || this.targetObject.kind !== 'station') return false;
-    return !!this.stationHold || this.position.distanceTo(this.targetObject.mesh.position) < DEPARTURE_RANGE;
+    return !!this.stationHold || this.position.distanceTo(this.targetObject.mesh.position) < departureRange(this.targetObject);
   }
 
   // Unit vector from the station's planet out through the station: the safe side to wait on
@@ -437,7 +675,7 @@ export class Spaceship {
   }
 
   // Docking point sits on the far side of the station from its planet, so it can never swing into the planet
-  stationDockPoint(station, standoff = DOCK_STANDOFF, solarSystem = this.solarSystem) {
+  stationDockPoint(station, standoff = stationHoldStandoff(station), solarSystem = this.solarSystem) {
     return station.mesh.position.clone().add(this.stationOutward(station, solarSystem).multiplyScalar(standoff));
   }
 
@@ -479,6 +717,7 @@ export class Spaceship {
 
     // Stations orbit fast: close in on the waiting point outside docking range, then ride along with the station
     if (this.targetObject.kind === 'station') {
+      if (this.holdStandoff === null) this.holdStandoff = stationHoldStandoff(this.targetObject);
       const dockPoint = this.stationDockPoint(this.targetObject, this.holdStandoff, solarSystem);
       const dockDist = dockPoint.distanceTo(this.position);
       if (this.stationHold || dockDist <= 0.3) {
@@ -571,7 +810,7 @@ export class Spaceship {
       .filter(p => p !== this.targetObject)
       .map(p => ({ center: p.group.position, safeRadius: atmosphereTop(p) + 1.8 }));
     if (this.targetObject && this.targetObject.kind === 'station') {
-      obstacles.push({ center: this.targetObject.mesh.position, safeRadius: STATION_CLEARANCE });
+      obstacles.push({ center: this.targetObject.mesh.position, safeRadius: stationClearance(this.targetObject) });
     }
 
     const lenSq = toTarget.lengthSq();
@@ -611,8 +850,19 @@ export class Spaceship {
     }
 
     if (!controls.keys.freeLook) {
-      this.rotationSpeed.yaw = -controls.mouseDelta.x * this.mouseSensitivity;
-      this.rotationSpeed.pitch = -controls.mouseDelta.y * this.mouseSensitivity;
+      // The mouse queues up steering, the ship works it off at the rate its thrusters allow, so the nose has
+      // weight: quick flicks feel immediate, big sweeps take the time they take
+      const sens = this.mouseSensitivity * pilotSettings.sensitivity;
+      const stick = this.stick;
+      stick.x = THREE.MathUtils.clamp(stick.x + controls.mouseDelta.x * sens, -STICK_LIMIT, STICK_LIMIT);
+      stick.y = THREE.MathUtils.clamp(stick.y + controls.mouseDelta.y * sens * (pilotSettings.invertY ? -1 : 1), -STICK_LIMIT, STICK_LIMIT);
+      const rate = this.turnRate * (0.5 + 0.5 * this.systems.engine);
+      const yaw = THREE.MathUtils.clamp(stick.x * STICK_RESPONSE, -rate, rate) * delta;
+      const pitch = THREE.MathUtils.clamp(stick.y * STICK_RESPONSE, -rate, rate) * delta;
+      stick.x -= yaw;
+      stick.y -= pitch;
+      this.rotationSpeed.yaw = -yaw;
+      this.rotationSpeed.pitch = -pitch;
     } else {
       this.rotationSpeed.yaw = 0;
       this.rotationSpeed.pitch = 0;
@@ -690,7 +940,8 @@ export class Spaceship {
       const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.quaternion);
       const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.quaternion);
 
-      const targetSpeed = this.throttle * this.maxSpeed;
+      const limit = this.speedLimit();
+      const targetSpeed = this.boosting ? limit * BOOST_SPEED : this.throttle * limit;
 
       if (this.flightAssist) {
         const idealVelocity = forward.clone().multiplyScalar(targetSpeed);
@@ -699,7 +950,7 @@ export class Spaceship {
         if (controls.keys.strafeLeft) strafeDir = -1;
         if (controls.keys.strafeRight) strafeDir = 1;
         
-        const strafeSpeed = this.maxSpeed * 0.4;
+        const strafeSpeed = limit * 0.4;
         const strafeVelocity = right.clone().multiplyScalar(strafeDir * strafeSpeed);
         
         // Relative to the local planet, plus the fading push of a station departure
@@ -711,8 +962,9 @@ export class Spaceship {
         this.velocity.lerp(combinedIdeal, delta * 3.5);
       } else {
         // Flight Assist OFF
-        if (Math.abs(this.throttle) > 0.01) {
-          const force = forward.clone().multiplyScalar(this.throttle * this.acceleration * delta);
+        if (Math.abs(this.throttle) > 0.01 || this.boosting) {
+          const push = this.boosting ? 2 : this.throttle;
+          const force = forward.clone().multiplyScalar(push * this.acceleration * (0.45 + 0.55 * this.systems.engine) * delta);
           this.velocity.add(force);
         }
         
@@ -726,7 +978,7 @@ export class Spaceship {
 
         // Under Newtonian, gravity slingshots can exceed normal speed limits!
         const currentSpeed = this.velocity.length();
-        const limitSpeed = this.gravityFieldActive ? this.maxSpeed * 2.5 : this.maxSpeed;
+        const limitSpeed = (this.gravityFieldActive ? limit * 2.5 : limit) * (this.boosting ? BOOST_SPEED : 1);
         if (currentSpeed > limitSpeed) {
           this.velocity.setLength(limitSpeed);
         }
@@ -798,7 +1050,7 @@ export class Spaceship {
   }
 
   updateSound() {
-    const soundThrottle = this.autopilotActive ? 0.95 : Math.abs(this.throttle);
+    const soundThrottle = this.autopilotActive || this.boosting ? 0.95 : Math.abs(this.throttle);
     
     if (soundThrottle !== this.lastThrottle) {
       spaceAudio.setThrottle(soundThrottle);
@@ -815,6 +1067,19 @@ export class Spaceship {
   }
 
   updateCamera(camera, delta) {
+    this.placeCamera(camera, delta);
+    // Hits shake the view
+    if (this.shake > 0.001) {
+      const s = this.shake * this.shake * 0.5;
+      camera.position.x += (Math.random() - 0.5) * s * 0.3;
+      camera.position.y += (Math.random() - 0.5) * s * 0.3;
+      camera.rotateX((Math.random() - 0.5) * s * 0.07);
+      camera.rotateY((Math.random() - 0.5) * s * 0.07);
+      camera.rotateZ((Math.random() - 0.5) * s * 0.1);
+    }
+  }
+
+  placeCamera(camera, delta) {
     if (this.cameraMode === 'cockpit') {
       const cockpitOffset = new THREE.Vector3(0, 0.05, -0.4);
       cockpitOffset.applyQuaternion(this.quaternion);

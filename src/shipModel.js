@@ -23,7 +23,7 @@ const PAINT = {
 // Procedural hull texture: panel lines, panel tone patches, rivets, streaks. One tile per world unit.
 // --------------------------------------------------------------------------------------------
 
-function rng(seed) {
+export function rng(seed) {
   let s = seed >>> 0;
   return () => {
     s = (s * 1664525 + 1013904223) >>> 0;
@@ -31,7 +31,7 @@ function rng(seed) {
   };
 }
 
-function makeHullTextures() {
+export function makeHullTextures() {
   const size = 1024;
   const albedo = document.createElement('canvas');
   albedo.width = albedo.height = size;
@@ -179,7 +179,7 @@ function makeDecalTexture(text) {
 }
 
 // Dim studio-like surroundings for reflections, so the shadowed side of the hull still reads as metal
-function makeEnvironment(renderer) {
+export function makeEnvironment(renderer) {
   const envScene = new THREE.Scene();
   const sky = new THREE.Mesh(
     new THREE.SphereGeometry(10, 32, 16),
@@ -215,7 +215,7 @@ function makeEnvironment(renderer) {
 // --------------------------------------------------------------------------------------------
 
 // Chamfered section outline at depth z: half width w, top t, bottom b, chamfers ct (top) and cb (bottom)
-function section(z, w, t, b, ct = 0.35, cb = 0.3, y0 = 0) {
+export function section(z, w, t, b, ct = 0.35, cb = 0.3, y0 = 0) {
   const ht = (t - b);
   const cT = Math.min(w, ht) * ct;
   const cB = Math.min(w, ht) * cb;
@@ -225,7 +225,7 @@ function section(z, w, t, b, ct = 0.35, cb = 0.3, y0 = 0) {
 }
 
 // Skin a list of equal-length rings into a closed, flat-shaded hull with end caps
-function loft(rings, { capStart = true, capEnd = true } = {}) {
+export function loft(rings, { capStart = true, capEnd = true } = {}) {
   const pos = [];
   const tri = (p, q, r) => pos.push(p.x, p.y, p.z, q.x, q.y, q.z, r.x, r.y, r.z);
   const n = rings[0].length;
@@ -254,7 +254,7 @@ function loft(rings, { capStart = true, capEnd = true } = {}) {
 }
 
 // Flat normals, box-projected UVs (one texture tile per world unit) and livery colors per face
-function finish(geometry, paint, uvScale = 0.75) {
+export function finish(geometry, paint, uvScale = 0.75) {
   let g = geometry.index ? geometry.toNonIndexed() : geometry;
   g.computeVertexNormals();
   const p = g.attributes.position;
@@ -297,7 +297,7 @@ function orientOutward(points) {
 }
 
 // A square-section bar between two points
-function strut(from, to, thick, height = thick) {
+export function strut(from, to, thick, height = thick) {
   const dir = new THREE.Vector3().subVectors(to, from);
   const geo = new THREE.BoxGeometry(thick, height, dir.length());
   const m = new THREE.Matrix4().lookAt(from, to, Math.abs(dir.clone().normalize().y) > 0.99 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0));
@@ -306,7 +306,7 @@ function strut(from, to, thick, height = thick) {
   return geo;
 }
 
-function merge(geometries) {
+export function merge(geometries) {
   const parts = geometries.map((g) => (g.index ? g.toNonIndexed() : g));
   let count = 0;
   parts.forEach((g) => { count += g.attributes.position.count; });
@@ -319,7 +319,7 @@ function merge(geometries) {
 }
 
 // Faceted body of revolution around the z axis: profile is [z, radius] pairs from front to back
-function nacelle(profile, segments = 8) {
+export function nacelle(profile, segments = 8) {
   const rings = profile.map(([z, r]) => {
     const ring = [];
     for (let i = 0; i < segments; i++) {
@@ -376,7 +376,7 @@ const PLUME_FRAGMENT = `
 `;
 
 // Soft round glow sprite texture for lights and nozzle flares
-function glowTexture() {
+export function glowTexture() {
   const c = document.createElement('canvas');
   c.width = c.height = 128;
   const g = c.getContext('2d');

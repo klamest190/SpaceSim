@@ -1,10 +1,17 @@
 import * as THREE from 'three';
 import { PlanetBody } from './planets';
+import { StationVisual } from './stationModels';
+import { STATION_DEFS, FIELD_DEFS } from './world';
+import { rng } from './shipModel';
+import { buildRockShapes, makeRockMaterials, makeRock, dressField } from './asteroids';
+import { createSkySphere, galacticDir, equatorialToGame } from './sky';
+import { BSC_COUNT, BSC_DATA } from './starCatalog';
+import { IoPlumes } from './moons';
+import { Aurorae } from './aurora';
 
 // Orbits keep their true spacing (1 unit = 100.000 km); bodies are drawn far larger than true scale,
 // so a ship of 2 units is tiny beside them and planets read as worlds from afar.
 const DIST_SCALE = 10.0;
-const STATION_ORBIT = 1.3;           // stations circle at this many planet radii, low over the clouds
 const FLOOR_ATMOSPHERE_DEPTH = 0.45; // the ship may sink this far into an atmosphere's shell
 const FLOOR_AIRLESS = 0.012;         // above airless ground it may come this close, in planet radii
 
@@ -186,21 +193,201 @@ export const PLANET_DATA = [
   }
 ];
 
-// Top of a body's atmosphere (its surface if it has none)
+// Moons, after the planets in the same list. Drawn far larger and closer than true scale like the planets, but
+// in their real order and with the 1:2 rhythm of Io and Europa. orbit: distance from the planet's centre (units);
+// period: seconds per orbit; plane: the planet's equator (most moons) or the ecliptic (Earth's Moon), tipped by
+// incl degrees. All are tidally locked: the same face always looks at their planet.
+export const MOON_DATA = [
+  {
+    name: 'Moon',
+    parent: 'Earth',
+    realRadius: 1737.4,
+    radius: 46,
+    orbit: 520,
+    period: 1600,
+    plane: 'ecliptic',
+    incl: 5.1,
+    node: 0.6,
+    gravity: 0.35,
+    light: 1.0,
+    bump: 5,
+    texWidth: 2048,
+    umbraTint: [0.1, 0.028, 0.01], // sunsets all round the Earth light the eclipsed Moon copper-red
+    details: {
+      mass: '7,342 × 10²² kg (0,012 Erdmassen)',
+      temp: '-173 °C bis 127 °C',
+      atmosphere: 'Praktisch keine',
+      funFact: 'Zeigt der Erde immer dieselbe Seite. Die dunklen Maria sind erstarrte Lavaseen, die hellen Hochländer über 4 Milliarden Jahre alt.'
+    }
+  },
+  {
+    name: 'Io',
+    parent: 'Jupiter',
+    realRadius: 1821.6,
+    radius: 50,
+    orbit: 1400,
+    period: 2900,
+    plane: 'equator',
+    incl: 0.05,
+    gravity: 0.4,
+    light: 1.0,
+    bump: 4,
+    texWidth: 2048,
+    auxMap: 2048,
+    umbraTint: [0.008, 0.003, 0.002],
+    details: {
+      mass: '8,93 × 10²² kg (0,015 Erdmassen)',
+      temp: '-143 °C, Lavaseen bis 1.600 °C',
+      atmosphere: 'Hauchdünn, Schwefeldioxid',
+      funFact: 'Der vulkanisch aktivste Körper im Sonnensystem: über 400 Vulkane, geknetet von Jupiters Gezeiten. Seine Fontänen steigen bis 400 km hoch.'
+    }
+  },
+  {
+    name: 'Europa',
+    parent: 'Jupiter',
+    realRadius: 1560.8,
+    radius: 46,
+    orbit: 1820,
+    period: 5800,
+    plane: 'equator',
+    incl: 0.47,
+    node: 2.1,
+    gravity: 0.32,
+    light: 1.0,
+    bump: 3,
+    texWidth: 2048,
+    umbraTint: [0.008, 0.003, 0.002],
+    details: {
+      mass: '4,80 × 10²² kg (0,008 Erdmassen)',
+      temp: '-160 °C (Äquator) bis -220 °C (Pole)',
+      atmosphere: 'Hauchdünn, Sauerstoff',
+      funFact: 'Unter dem Eispanzer liegt ein Salzwasser-Ozean mit mehr Wasser als alle Meere der Erde. Io, Europa und Ganymed umrunden Jupiter im Takt 1:2:4.'
+    }
+  },
+  {
+    name: 'Titan',
+    parent: 'Saturn',
+    realRadius: 2574.7,
+    radius: 70,
+    orbit: 2500,
+    period: 9000,
+    plane: 'equator',
+    incl: 0.35,
+    node: 4.0,
+    gravity: 0.36,
+    light: 1.0,
+    texWidth: 1024,
+    // Orange smog of tholins that swallows blue light, under a thin blue haze high above it
+    atmosphere: {
+      thickness: 0.2, hR: 0.6, hM: 0.32, tauR: [0.012, 0.03, 0.09], tauM: 2.5, g: 0.45, sunE: 30,
+      mieCol: [1.0, 0.74, 0.34], mieExt: [1.1, 1.4, 2.3], steps: 40
+    },
+    details: {
+      mass: '1,35 × 10²³ kg (0,023 Erdmassen)',
+      temp: '-179 °C',
+      atmosphere: 'Stickstoff (95 %), Methan (5 %), anderthalbfacher Erddruck',
+      funFact: 'Der einzige Mond mit dichter Lufthülle. Oranger Smog verhüllt Seen aus flüssigem Methan und Ethan, und es regnet Methan.'
+    }
+  }
+];
+
 const SUN_INTENSITY = 2.6;
 
-// Average colour of each planet's sunlit face, for the light it reflects onto nearby ships
+// Average colour of each body's sunlit face, for the light it reflects onto nearby ships
 const FILL_TINT = {
   Mercury: 0x9a948c, Venus: 0xe0c89a, Earth: 0x8fb0e0, Mars: 0xc07850,
   Jupiter: 0xd8c0a0, Saturn: 0xe0d0a8, Uranus: 0xa8e0e8, Neptune: 0x6f8fe8,
+  Moon: 0x9c9a94, Io: 0xd8c070, Europa: 0xd8d0c0, Titan: 0xd09040,
 };
+
+// The stars: round soft points, sized and lit by magnitude; uGain is the eyes' adaptation. They never twinkle:
+// there is no air out here to make them.
+const STAR_DISTANCE = 120000;
+const STAR_VERTEX = /* glsl */ `
+#include <common>
+#include <logdepthbuf_pars_vertex>
+attribute vec3 aColor;
+attribute float aSize;
+uniform float uGain;
+uniform float uPx;
+varying vec3 vCol;
+varying float vSize;
+void main() {
+  vCol = aColor * uGain;
+  vec4 mv = modelViewMatrix * vec4(position, 1.0);
+  gl_Position = projectionMatrix * mv;
+  // Faint stars shrink as well as fade when the eyes are dazzled
+  gl_PointSize = max(1.0, aSize * uPx * clamp(0.55 + 0.45 * uGain, 0.6, 1.2));
+  vSize = gl_PointSize;
+  #include <logdepthbuf_vertex>
+}
+`;
+const STAR_FRAGMENT = /* glsl */ `
+#include <logdepthbuf_pars_fragment>
+varying vec3 vCol;
+varying float vSize;
+void main() {
+  #include <logdepthbuf_fragment>
+  vec2 d = gl_PointCoord - 0.5;
+  float r2 = dot(d, d) * 4.0;
+  if (r2 > 1.0) discard;
+  // A pixel or two: flat, so the light is not lost; bigger stars get a bright core and a soft halo
+  float a = mix(1.0, exp(-r2 * 2.5), smoothstep(2.0, 4.5, vSize));
+  gl_FragColor = vec4(vCol * a, 1.0);
+}
+`;
+
+// Colour of a star's light from its surface temperature (a blackbody fit), in linear RGB with the brightest channel
+// at 1. A little more colour than the naked eye sees, as on a photograph: red giants orange, hot stars blue.
+function starColor(kelvin, out) {
+  const t = kelvin / 100;
+  let r, g, b;
+  if (t <= 66) {
+    r = 255;
+    g = 99.4708 * Math.log(t) - 161.1196;
+    b = t <= 19 ? 0 : 138.5177 * Math.log(t - 10) - 305.0448;
+  } else {
+    r = 329.6987 * Math.pow(t - 60, -0.1332);
+    g = 288.1222 * Math.pow(t - 60, -0.0755);
+    b = 255;
+  }
+  const c01 = (v) => THREE.MathUtils.clamp(v / 255, 0, 1);
+  out.setRGB(c01(r), c01(g), c01(b), THREE.SRGBColorSpace);
+  const avg = (out.r + out.g + out.b) / 3;
+  out.r = Math.max(0, avg + (out.r - avg) * 1.35);
+  out.g = Math.max(0, avg + (out.g - avg) * 1.35);
+  out.b = Math.max(0, avg + (out.b - avg) * 1.35);
+  const max = Math.max(out.r, out.g, out.b, 1e-6);
+  return out.multiplyScalar(1 / max);
+}
+
+const _off = new THREE.Vector3();
+const _vel = new THREE.Vector3();
+const _tint = new THREE.Color();
 
 export function atmosphereTop(p) {
   return p.body.atmosphereTop;
 }
 
-// Closest a ship may come to a planet's centre: into the upper atmosphere, or just above airless ground
+// Bodies with a ground to fly over (see surface.js), and how deep into the atmosphere the dive goes before
+// the ship hands over to atmospheric flight: halfway through the shell, or this close over airless ground
+const SURFACE_WORLDS = new Set(['Mercury', 'Venus', 'Earth', 'Mars']);
+const SURFACE_ENTRY_DEPTH = 0.5;
+const SURFACE_ENTRY_AIRLESS = 0.03;
+
+// Distance from a planet's centre at which a dive turns into atmospheric flight; null for bodies without ground
+export function surfaceEntryRadius(p) {
+  if (!SURFACE_WORLDS.has(p.name) || !p.body) return null;
+  const top = p.body.atmosphereTop;
+  if (top > p.radius) return top - (top - p.radius) * SURFACE_ENTRY_DEPTH;
+  return p.radius * (1 + SURFACE_ENTRY_AIRLESS);
+}
+
+// Closest a ship may come to a planet's centre: into the upper atmosphere, or just above airless ground.
+// Over a ground the dive hands over to atmospheric flight before this is reached.
 export function flightFloor(p) {
+  const entry = surfaceEntryRadius(p);
+  if (entry) return p.radius + (entry - p.radius) * 0.6;
   const top = p.body.atmosphereTop;
   if (top > p.radius) return top - (top - p.radius) * FLOOR_ATMOSPHERE_DEPTH;
   return p.radius * (1 + FLOOR_AIRLESS);
@@ -217,7 +404,6 @@ export class SolarSystem {
     // Space Stations, Asteroids & Trade Ships
     this.stations = [];
     this.asteroids = [];
-    this.tradeShips = [];
     
     // Lock to arcade scaling mode
     this.scaleMode = 'arcade'; 
@@ -225,16 +411,54 @@ export class SolarSystem {
     this.setupSolarSystem();
     this.setupAsteroidBelt();
     this.setupSpaceStations();
-    this.setupTradeShips();
+  }
+
+  // How much the law reaches a point: full next to a secure station, fading with distance
+  securityAt(pos) {
+    let best = 0.03;
+    this.stations.forEach((st) => {
+      const d = st.mesh.position.distanceTo(pos);
+      const reach = 1 - THREE.MathUtils.smoothstep(d, 900, 3400);
+      best = Math.max(best, st.security * reach);
+    });
+    return best;
+  }
+
+  nearestStation(pos, filter = null) {
+    let best = null, bestD = Infinity;
+    this.stations.forEach((st) => {
+      if (filter && !filter(st)) return;
+      const d = st.mesh.position.distanceToSquared(pos);
+      if (d < bestD) { bestD = d; best = st; }
+    });
+    return best;
+  }
+
+  // Move a point out of any planet or station it would be inside
+  pushClear(pos, margin = 30) {
+    this.planets.forEach((p) => {
+      const safe = (p.name === 'Sun' ? p.radius * 1.5 : p.body.atmosphereTop) + margin;
+      const offset = pos.clone().sub(p.group.position);
+      if (offset.length() < safe) pos.copy(p.group.position).add(offset.setLength(safe));
+    });
+    this.stations.forEach((st) => {
+      const safe = st.size + margin;
+      const offset = pos.clone().sub(st.mesh.position);
+      if (offset.length() < safe) pos.copy(st.mesh.position).add(offset.setLength(safe));
+    });
+    return pos;
   }
 
   setupSolarSystem() {
     this.skyGroup = new THREE.Group();
     this.scene.add(this.skyGroup);
 
+    // The Milky Way, nebulae and faint stars baked into one sky map; bright stars and far galaxies on top
+    this.skyGroup.add(createSkySphere(this.renderer));
     this.createStarfield();
-    this.createNebulae();
     this.createGalaxies();
+    this.skyAdapt = 1;
+    this.skyThrough = 1;
 
     const ambientLight = new THREE.AmbientLight(0x0f1422, 1.2);
     this.scene.add(ambientLight);
@@ -289,420 +513,307 @@ export class SolarSystem {
       this.orbitLines.push(orbitLine);
     });
 
+    this.setupMoons();
+    this.aurorae = new Aurorae(this);
+    this.auroraStorm = {};
     this.update(0);
+  }
+
+  setupMoons() {
+    MOON_DATA.forEach((data, k) => {
+      const parent = this.planets.find((p) => p.name === data.parent);
+      const body = new PlanetBody(this.renderer, data, 300 + k * 23.0);
+      this.scene.add(body.group);
+      // Orbit plane: the planet's equator, or the ecliptic for Earth's Moon, tipped by the inclination
+      const plane = new THREE.Quaternion();
+      if (data.plane === 'equator') plane.copy(parent.body.tilt.quaternion);
+      const node = new THREE.Vector3(Math.cos(data.node || 0), 0, Math.sin(data.node || 0));
+      plane.multiply(new THREE.Quaternion().setFromAxisAngle(node, THREE.MathUtils.degToRad(data.incl || 0)));
+      // The moon spins about its orbit's axis, once per orbit
+      body.tilt.quaternion.copy(plane);
+      const moon = {
+        name: data.name,
+        group: body.group,
+        mesh: body.mesh,
+        rings: null,
+        atmosphere: body.atmosphere || null,
+        clouds: null,
+        body,
+        radius: data.radius,
+        data,
+        parent,
+        plane,
+        orbitRadius: data.orbit,
+        rate: (2 * Math.PI) / data.period,
+        angle: Math.random() * Math.PI * 2,
+        currentPos: new THREE.Vector3(),
+        velocity: new THREE.Vector3(),
+      };
+      this.planets.push(moon);
+      (parent.moons = parent.moons || []).push(moon);
+
+      // A faint orbit ring, carried along with the planet
+      const points = [];
+      for (let i = 0; i < 160; i++) {
+        const a = (i / 160) * Math.PI * 2;
+        points.push(new THREE.Vector3(data.orbit * Math.cos(a), 0, -data.orbit * Math.sin(a)));
+      }
+      moon.orbitLine = new THREE.LineLoop(
+        new THREE.BufferGeometry().setFromPoints(points),
+        new THREE.LineBasicMaterial({ color: 0x00f0ff, transparent: true, opacity: 0.05, depthWrite: false })
+      );
+      moon.orbitLine.quaternion.copy(plane);
+      this.scene.add(moon.orbitLine);
+
+      if (data.name === 'Io') {
+        this.ioPlumes = new IoPlumes(body);
+        this.ioMoon = moon;
+      }
+    });
+
+    // Who can eclipse whom: a planet's moons darken the planet, the planet and sibling moons darken a moon
+    this.planets.forEach((p) => {
+      if (p.name === 'Sun') return;
+      p.casters = p.parent ? [p.parent, ...p.parent.moons.filter((m) => m !== p)] : (p.moons || []);
+    });
+  }
+
+  // A moon on its circle around its planet, turning so the same face looks at the planet
+  updateMoon(m, delta) {
+    if (delta > 0) m.angle += m.rate * delta;
+    const r = m.orbitRadius;
+    _off.set(r * Math.cos(m.angle), 0, -r * Math.sin(m.angle)).applyQuaternion(m.plane);
+    m.currentPos.copy(m.parent.group.position).add(_off);
+    m.group.position.copy(m.currentPos);
+    _vel.set(-Math.sin(m.angle), 0, -Math.cos(m.angle)).multiplyScalar(r * m.rate).applyQuaternion(m.plane);
+    m.velocity.copy(m.parent.velocity).add(_vel);
+    m.body.update(delta, this.time);
+    m.body.mesh.rotation.y = m.angle + Math.PI;
+    m.orbitLine.position.copy(m.parent.group.position);
+  }
+
+  // The body whose gravity field holds a point: the nearest one within reach (a moon before its planet)
+  frameBodyAt(pos, reach = 4) {
+    let best = null;
+    let bestDist = Infinity;
+    this.planets.forEach((p) => {
+      const d = p.group.position.distanceTo(pos);
+      if (p.velocity && d < p.radius * reach && d < bestDist) {
+        best = p;
+        bestDist = d;
+      }
+    });
+    return best;
+  }
+
+  // The planet's day side as a lamp for its moon: brighter the closer it is and the more of its lit face the moon sees
+  updatePlanetshine(m) {
+    const u = m.body.uniforms;
+    const toParent = _off.copy(m.parent.group.position).sub(m.group.position);
+    const dist = toParent.length();
+    u.uShineDir.value.copy(toParent).divideScalar(dist);
+    const parentToSun = _vel.copy(m.parent.group.position).negate().normalize();
+    const phase = 0.5 * (1 - u.uShineDir.value.dot(parentToSun));
+    const k = 2.2 * (m.parent.radius / dist) ** 2 * phase;
+    const tint = _tint.set(FILL_TINT[m.parent.name] || 0xb0b8c8);
+    u.uShineCol.value.set(tint.r * k, tint.g * k, tint.b * k);
   }
 
   // Right before rendering: the planets' shaders work in planet-local space around the camera
   updateView(camera) {
-    this.planets.forEach(p => p.body.updateView(camera));
-  }
-
-  setupAsteroidBelt() {
-    const asteroidCount = 400; // Increased count for density
-    
-    this.asteroidGroup = new THREE.Group();
-    this.scene.add(this.asteroidGroup);
-
-    const rockMat = new THREE.MeshStandardMaterial({
-      color: 0x42484f,
-      roughness: 0.9,
-      metalness: 0.1,
-      flatShading: true
-    });
-
-    for (let i = 0; i < asteroidCount; i++) {
-      // In physical units (million km), the Asteroid belt lies between 329 and 478 million km
-      // (2.2 AE to 3.2 AE from Sun)
-      const radiusReal = 329 + Math.random() * 149; // million km
-      const angle = Math.random() * Math.PI * 2;
-      const speed = 0.003 + Math.random() * 0.005; // slower orbital velocities further out
-      const heightReal = (Math.random() - 0.5) * 12.0; // vertical dispersion
-
-      const sizeReal = 50 + Math.random() * 150; // physical size in km
-
-      // Base geometry (re-scaled in update)
-      const baseRockGeom = new THREE.DodecahedronGeometry(1.0, 1);
-      const posAttr = baseRockGeom.getAttribute('position');
-      for (let j = 0; j < posAttr.count; j++) {
-        const vx = posAttr.getX(j) + (Math.random() - 0.5) * 0.35;
-        const vy = posAttr.getY(j) + (Math.random() - 0.5) * 0.35;
-        const vz = posAttr.getZ(j) + (Math.random() - 0.5) * 0.35;
-        posAttr.setXYZ(j, vx, vy, vz);
+    this.planets.forEach((p) => {
+      if (!p.casters) return;
+      if (p.parent) this.updatePlanetshine(p);
+      const slots = p.body.uniforms.uCasters.value;
+      for (let i = 0; i < slots.length; i++) {
+        const c = p.casters[i];
+        if (c) slots[i].set(c.group.position.x - p.group.position.x, c.group.position.y - p.group.position.y, c.group.position.z - p.group.position.z, c.radius);
+        else slots[i].set(0, 0, 0, 0);
       }
-      baseRockGeom.computeVertexNormals();
-
-      const mesh = new THREE.Mesh(baseRockGeom, rockMat);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      
-      const spin = new THREE.Vector3(
-        (Math.random() - 0.5) * 0.8,
-        (Math.random() - 0.5) * 0.8,
-        (Math.random() - 0.5) * 0.8
-      );
-
-      this.asteroidGroup.add(mesh);
-
-      this.asteroids.push({
-        name: `ASTEROID-${i + 1}`,
-        mesh: mesh,
-        orbitRadiusReal: radiusReal,
-        angle: angle,
-        orbitSpeed: speed,
-        heightReal: heightReal,
-        spin: spin,
-        sizeReal: sizeReal
-      });
+    });
+    this.planets.forEach(p => p.body.updateView(camera));
+    this.aurorae.update(this.time, this.auroraStorm);
+    if (this.ioPlumes) {
+      this.ioPlumes.update(camera, this.time, this.renderer, this.sunVisibilityAt(this.ioMoon.group.position, this.ioMoon));
     }
   }
 
+  // Asteroid fields: dense clusters of real rocks to fly through and mine, plus a faint dust band marking the belt
+  setupAsteroidBelt() {
+    this.asteroidGroup = new THREE.Group();
+    this.scene.add(this.asteroidGroup);
+
+    // Rock shapes with three levels of detail each, shared by all rocks; plain rock, ice-rich (worth ice) and
+    // metal-rich (worth ore)
+    const shapes = buildRockShapes(8);
+    this.rockMaterials = makeRockMaterials();
+
+    let id = 0;
+    FIELD_DEFS.forEach((field, fi) => {
+      const rand = rng(900 + fi * 31);
+      const center = new THREE.Vector3(Math.cos(field.angle) * field.orbitRadius, 0, Math.sin(field.angle) * field.orbitRadius);
+      field.center = center;
+      for (let i = 0; i < field.count; i++) {
+        // Clustered: most rocks near the middle, a flattened disc
+        const r = field.spread * Math.sqrt(rand()) * (0.25 + rand() * 0.75);
+        const a = rand() * Math.PI * 2;
+        const offset = new THREE.Vector3(Math.cos(a) * r, (rand() - 0.5) * field.spread * 0.18, Math.sin(a) * r);
+        const size = 1.2 + 26 * rand() ** 3.2;
+        const roll = rand();
+        const kind = roll < 0.55 ? 'rock' : roll < 0.78 ? 'ice' : 'ore';
+        const mesh = makeRock(shapes[Math.floor(rand() * shapes.length)], this.rockMaterials[kind], size);
+        mesh.position.copy(center).add(offset);
+        mesh.rotation.set(rand() * 6, rand() * 6, rand() * 6);
+        this.asteroidGroup.add(mesh);
+        this.asteroids.push({
+          name: `ASTEROID-${++id}`, kind: 'asteroid', mesh, size, rockKind: kind, hp: size * 9, maxHp: size * 9,
+          spin: new THREE.Vector3((rand() - 0.5) * 0.3, (rand() - 0.5) * 0.3, (rand() - 0.5) * 0.3).multiplyScalar(4 / (2 + size)),
+          field: field.name,
+        });
+      }
+      this.asteroidGroup.add(dressField(field, center, shapes, this.rockMaterials, 7000 + fi * 13));
+    });
+
+    // The belt from afar: a band of faint dust points around the Sun
+    const count = 5000;
+    const pts = new Float32Array(count * 3);
+    const rand = rng(4242);
+    for (let i = 0; i < count; i++) {
+      const r = 3300 + rand() * 1500;
+      const a = rand() * Math.PI * 2;
+      pts[i * 3] = Math.cos(a) * r;
+      pts[i * 3 + 1] = (rand() - 0.5) * (rand() - 0.5) * 900;
+      pts[i * 3 + 2] = Math.sin(a) * r;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pts, 3));
+    this.beltDust = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0x8a7e70, size: 1.2, sizeAttenuation: false, transparent: true, opacity: 0.2, depthWrite: false }));
+    this.scene.add(this.beltDust);
+  }
+
+  // A rock broken by mining: gone from the field (it grows back after a while somewhere out of sight)
+  removeAsteroid(ast) {
+    const i = this.asteroids.indexOf(ast);
+    if (i === -1) return;
+    this.asteroids.splice(i, 1);
+    this.asteroidGroup.remove(ast.mesh);
+  }
+
   setupSpaceStations() {
-    const createStationMesh = (color) => {
-      const station = new THREE.Group();
-
-      const ringGeom = new THREE.TorusGeometry(0.7, 0.12, 8, 32);
-      const metalMat = new THREE.MeshStandardMaterial({ color: 0x8a939e, roughness: 0.45, metalness: 0.5 });
-      const ring = new THREE.Mesh(ringGeom, metalMat);
-      ring.rotateX(Math.PI / 2);
-      station.add(ring);
-
-      const hubGeom = new THREE.CylinderGeometry(0.2, 0.2, 1.2, 8);
-      const hub = new THREE.Mesh(hubGeom, metalMat);
-      station.add(hub);
-
-      const strutGeom = new THREE.BoxGeometry(0.08, 0.08, 1.4);
-      const strut = new THREE.Mesh(strutGeom, metalMat);
-      station.add(strut);
-
-      const panelGeom = new THREE.BoxGeometry(2.0, 0.03, 0.35);
-      const panelMat = new THREE.MeshStandardMaterial({ color: 0x1a3f9a, roughness: 0.25, metalness: 0.6 });
-      const panels = new THREE.Mesh(panelGeom, panelMat);
-      panels.position.set(0, 0.3, 0);
-      station.add(panels);
-
-      const lightGeom = new THREE.SphereGeometry(0.06, 6, 6);
-      const lightMat = new THREE.MeshBasicMaterial({ color: color });
-      const beacon1 = new THREE.Mesh(lightGeom, lightMat);
-      beacon1.position.set(0, 0.7, 0);
-      station.add(beacon1);
-
-      const beacon2 = new THREE.Mesh(lightGeom, lightMat);
-      beacon2.position.set(0, -0.7, 0);
-      station.add(beacon2);
-
-      station.scale.set(0.65, 0.65, 0.65);
-      return station;
-    };
-
-    const earthStationMesh = createStationMesh(0x00ff66);
-    this.scene.add(earthStationMesh);
-    this.stations.push({
-      name: 'Erde Orbital-Station',
-      kind: 'station',
-      planetIndex: 3,
-      mesh: earthStationMesh,
-      orbitAngle: 0.0,
-      orbitVelocity: 4.0 // units/s along the orbit, slow enough to catch up with and dock
-    });
-
-    const marsStationMesh = createStationMesh(0xffaa00);
-    this.scene.add(marsStationMesh);
-    this.stations.push({
-      name: 'Mars Außenposten',
-      kind: 'station',
-      planetIndex: 4,
-      mesh: marsStationMesh,
-      orbitAngle: Math.PI,
-      orbitVelocity: 4.0
-    });
-  }
-
-  createFreighterMesh() {
-    const group = new THREE.Group();
-
-    // Central cylindrical hull
-    const hullGeom = new THREE.CylinderGeometry(0.2, 0.25, 2.2, 8);
-    hullGeom.rotateX(Math.PI / 2);
-    const metalMat = new THREE.MeshStandardMaterial({
-      color: 0x4f545a,
-      roughness: 0.4,
-      metalness: 0.7
-    });
-    const hull = new THREE.Mesh(hullGeom, metalMat);
-    group.add(hull);
-
-    // Front Cockpit Cabin (small box facing Z = -1.1)
-    const cabGeom = new THREE.BoxGeometry(0.35, 0.25, 0.45);
-    const glassMat = new THREE.MeshPhongMaterial({
-      color: 0xffbb00,
-      emissive: 0x442200,
-      shininess: 80
-    });
-    const cabin = new THREE.Mesh(cabGeom, glassMat);
-    cabin.position.set(0, 0.08, -1.1);
-    group.add(cabin);
-
-    // Cargo Container crates stacked on the sides
-    const cargoGeom = new THREE.BoxGeometry(0.36, 0.36, 0.55);
-    const cargoMat1 = new THREE.MeshStandardMaterial({ color: 0x9c2424, roughness: 0.6 });
-    const cargoMat2 = new THREE.MeshStandardMaterial({ color: 0x24619c, roughness: 0.6 });
-    
-    const c1 = new THREE.Mesh(cargoGeom, cargoMat1);
-    c1.position.set(-0.28, 0, -0.35);
-    group.add(c1);
-
-    const c2 = new THREE.Mesh(cargoGeom, cargoMat2);
-    c2.position.set(0.28, 0, -0.35);
-    group.add(c2);
-
-    const c3 = new THREE.Mesh(cargoGeom, cargoMat2);
-    c3.position.set(-0.28, 0, 0.35);
-    group.add(c3);
-
-    const c4 = new THREE.Mesh(cargoGeom, cargoMat1);
-    c4.position.set(0.28, 0, 0.35);
-    group.add(c4);
-
-    // Engine thrusters on back (Z = 1.1)
-    const engGeom = new THREE.CylinderGeometry(0.12, 0.16, 0.4, 8);
-    engGeom.rotateX(Math.PI / 2);
-    const engMat = new THREE.MeshStandardMaterial({ color: 0x1c1c1c, metalness: 0.8 });
-    
-    const e1 = new THREE.Mesh(engGeom, engMat);
-    e1.position.set(-0.16, 0, 1.1);
-    group.add(e1);
-
-    const e2 = new THREE.Mesh(engGeom, engMat);
-    e2.position.set(0.16, 0, 1.1);
-    group.add(e2);
-
-    // Engine glow cones
-    const glowGeom = new THREE.CylinderGeometry(0.08, 0.01, 0.25, 8);
-    glowGeom.rotateX(Math.PI / 2);
-    const glowMat = new THREE.MeshBasicMaterial({
-      color: 0xffaa00,
-      transparent: true,
-      opacity: 0.8
-    });
-    
-    const g1 = new THREE.Mesh(glowGeom, glowMat);
-    g1.position.set(-0.16, 0, 1.3);
-    group.add(g1);
-
-    const g2 = new THREE.Mesh(glowGeom, glowMat);
-    g2.position.set(0.16, 0, 1.3);
-    group.add(g2);
-
-    group.castShadow = true;
-    group.receiveShadow = true;
-    
-    group.scale.set(0.65, 0.65, 0.65);
-    return group;
-  }
-
-  setupTradeShips() {
-    this.tradeShips = [];
-
-    const specs = [
-      { name: 'HÄNDLER-FRIGATTE MERC-01', planetIndex: 3, localAngle: 0.0, orbitRadiusFactor: 1.45, inclinationOffset: 0.1, orbitSpeed: 6.0 },
-      { name: 'HÄNDLER-FRIGATTE MERC-02', planetIndex: 3, localAngle: Math.PI, orbitRadiusFactor: 1.75, inclinationOffset: -0.2, orbitSpeed: -5.0 },
-      { name: 'HÄNDLER-FRIGATTE MERC-03', planetIndex: 4, localAngle: 0.5, orbitRadiusFactor: 1.5, inclinationOffset: 0.25, orbitSpeed: 6.5 },
-      { name: 'HÄNDLER-FRIGATTE MERC-04', planetIndex: 4, localAngle: Math.PI * 1.5, orbitRadiusFactor: 1.8, inclinationOffset: -0.15, orbitSpeed: -5.0 }
-    ];
-
-    specs.forEach(spec => {
-      const mesh = this.createFreighterMesh();
-      this.scene.add(mesh);
-      
-      this.tradeShips.push({
-        name: spec.name,
-        mesh: mesh,
-        planetIndex: spec.planetIndex,
-        localAngle: spec.localAngle,
-        orbitRadiusFactor: spec.orbitRadiusFactor,
-        inclinationOffset: spec.inclinationOffset,
-        orbitSpeed: spec.orbitSpeed,
-        shield: 100
-      });
+    STATION_DEFS.forEach((def, i) => {
+      const visual = new StationVisual(def, this.renderer, i * 7 + 3);
+      // Stations named after a moon circle that moon; planetIndex then points at the moon in the body list
+      const bodyIndex = def.moon ? this.planets.findIndex((p) => p.name === def.moon) : def.planetIndex;
+      const parent = this.planets[bodyIndex];
+      const orbitRadius = def.planetIndex === 0 ? def.orbitRadius : parent.radius * def.orbit;
+      const st = {
+        name: def.name,
+        kind: 'station',
+        def,
+        planetIndex: bodyIndex,
+        systemIndex: def.planetIndex,
+        mesh: visual.group,
+        visual,
+        size: def.size,
+        security: def.security,
+        orbitRadius,
+        orbitAngle: def.planetIndex === 0 ? def.angle : (i * 1.7) % (Math.PI * 2),
+        // Stations in the belt hold still; the others circle their planet slowly enough to catch up with and dock
+        orbitVelocity: def.planetIndex === 0 ? 0 : 4.0,
+        hidden: !!def.hidden,
+      };
+      visual.group.visible = !def.hidden;
+      this.scene.add(visual.group);
+      this.stations.push(st);
     });
   }
 
   createStarfield() {
-    // Layer 1: Background Dust Stars (dense, faint, cool colors)
-    const bgCount = 7000;
-    const bgGeom = new THREE.BufferGeometry();
-    const bgPos = new Float32Array(bgCount * 3);
-    const bgCols = new Float32Array(bgCount * 3);
-
-    for (let i = 0; i < bgCount * 3; i += 3) {
-      const u = Math.random();
-      const v = Math.random();
-      const theta = u * 2.0 * Math.PI;
-      const phi = Math.acos(2.0 * v - 1.0);
-      const r = 120000 + Math.random() * 20000;
-
-      bgPos[i] = r * Math.sin(phi) * Math.cos(theta);
-      bgPos[i + 1] = r * Math.sin(phi) * Math.sin(theta);
-      bgPos[i + 2] = r * Math.cos(phi);
-
-      const rc = Math.random();
-      if (rc < 0.35) {
-        // Faint blue-cyan dust
-        bgCols[i] = 0.45; bgCols[i + 1] = 0.65; bgCols[i + 2] = 0.85;
-      } else if (rc < 0.6) {
-        // Faint pink-magenta dust
-        bgCols[i] = 0.65; bgCols[i + 1] = 0.45; bgCols[i + 2] = 0.75;
-      } else {
-        // Dim white
-        bgCols[i] = 0.7; bgCols[i + 1] = 0.7; bgCols[i + 2] = 0.7;
-      }
-    }
-    bgGeom.setAttribute('position', new THREE.BufferAttribute(bgPos, 3));
-    bgGeom.setAttribute('color', new THREE.BufferAttribute(bgCols, 3));
-
-    const bgMat = new THREE.PointsMaterial({
-      size: 1.0,
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.85,
-      sizeAttenuation: false,
-      depthWrite: false
-    });
-    const bgStars = new THREE.Points(bgGeom, bgMat);
-    this.skyGroup.add(bgStars);
-
-    // Layer 2: Foreground Bright Stars (fewer, larger, colorful)
-    const fgCount = 1500;
-    const fgGeom = new THREE.BufferGeometry();
-    const fgPos = new Float32Array(fgCount * 3);
-    const fgCols = new Float32Array(fgCount * 3);
-
-    for (let i = 0; i < fgCount * 3; i += 3) {
-      const u = Math.random();
-      const v = Math.random();
-      const theta = u * 2.0 * Math.PI;
-      const phi = Math.acos(2.0 * v - 1.0);
-      const r = 110000 + Math.random() * 25000;
-
-      fgPos[i] = r * Math.sin(phi) * Math.cos(theta);
-      fgPos[i + 1] = r * Math.sin(phi) * Math.sin(theta);
-      fgPos[i + 2] = r * Math.cos(phi);
-
-      const rc = Math.random();
-      if (rc < 0.3) {
-        // Vibrant bright blue stars
-        fgCols[i] = 0.3; fgCols[i + 1] = 0.7; fgCols[i + 2] = 1.0;
-      } else if (rc < 0.55) {
-        // Vibrant orange-red stars
-        fgCols[i] = 1.0; fgCols[i + 1] = 0.5; fgCols[i + 2] = 0.3;
-      } else if (rc < 0.75) {
-        // Warm gold-yellow stars
-        fgCols[i] = 1.0; fgCols[i + 1] = 0.9; fgCols[i + 2] = 0.4;
-      } else {
-        // Brilliant white stars
-        fgCols[i] = 1.0; fgCols[i + 1] = 1.0; fgCols[i + 2] = 1.0;
-      }
-    }
-    fgGeom.setAttribute('position', new THREE.BufferAttribute(fgPos, 3));
-    fgGeom.setAttribute('color', new THREE.BufferAttribute(fgCols, 3));
-
-    const fgMat = new THREE.PointsMaterial({
-      size: 2.2,
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.95,
-      sizeAttenuation: false,
-      depthWrite: false
-    });
-    const fgStars = new THREE.Points(fgGeom, fgMat);
-    this.skyGroup.add(fgStars);
-  }
-
-  createNebulaTexture(colorStr) {
-    const canvas = document.createElement('canvas');
-    canvas.width = 512;
-    canvas.height = 512;
-    const ctx = canvas.getContext('2d');
-    
-    // Clear canvas
-    ctx.clearRect(0, 0, 512, 512);
-
-    // Draw 12 overlapping gaseous blobs of different sizes/positions
-    const blobCount = 12;
-    for (let i = 0; i < blobCount; i++) {
-      const angle = Math.random() * Math.PI * 2;
-      const dist = Math.random() * 120; // max offset from center
-      const cx = 256 + Math.cos(angle) * dist;
-      const cy = 256 + Math.sin(angle) * dist;
-      
-      const r = 50 + Math.random() * 110; // radius of this blob
-      const opacityMultiplier = 0.08 + Math.random() * 0.16;
-      
-      const grad = ctx.createRadialGradient(cx, cy, 1, cx, cy, r);
-      const baseCol = colorStr.replace('1.0', opacityMultiplier.toFixed(2));
-      const midCol = colorStr.replace('1.0', (opacityMultiplier * 0.45).toFixed(2));
-      const edgeCol = 'rgba(0,0,0,0)';
-      
-      grad.addColorStop(0, baseCol);
-      grad.addColorStop(0.4, midCol);
-      grad.addColorStop(1, edgeCol);
-      
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Add textured dust noise, only on top of existing gas (keeps the plane's edges invisible)
-    const noise = this.generateNoiseCanvas(64, 64, 0, 255);
-    ctx.save();
-    ctx.globalCompositeOperation = 'source-atop';
-    ctx.globalAlpha = 0.06;
-    ctx.drawImage(noise, 0, 0, 512, 512);
-    ctx.restore();
-
-    const tex = new THREE.CanvasTexture(canvas);
-    return tex;
-  }
-
-  createNebulae() {
-    const colors = [
-      'rgba(90, 30, 140, 1.0)',   // Rich cosmic violet
-      'rgba(20, 75, 160, 1.0)',   // Deep nebula blue
-      'rgba(145, 30, 75, 1.0)',   // Vibrant dusty rose
-      'rgba(15, 95, 80, 1.0)',    // Aurora emerald
-      'rgba(160, 80, 20, 1.0)'    // Solar gold
-    ];
-    
-    colors.forEach((col, i) => {
-      const tex = this.createNebulaTexture(col);
-      const mat = new THREE.MeshBasicMaterial({
-        map: tex,
+    this.starMaterials = [];
+    const px = this.renderer.getPixelRatio();
+    const addPoints = (pos, col, size) => {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      geo.setAttribute('aColor', new THREE.BufferAttribute(col, 3));
+      geo.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
+      const mat = new THREE.ShaderMaterial({
+        uniforms: { uGain: { value: 1 }, uPx: { value: px } },
+        vertexShader: STAR_VERTEX,
+        fragmentShader: STAR_FRAGMENT,
         transparent: true,
-        opacity: 0.42,
+        depthWrite: false,
         blending: THREE.AdditiveBlending,
-        depthWrite: false
       });
-      
-      const size = 50000 + Math.random() * 30000;
-      const geom = new THREE.PlaneGeometry(size, size);
-      const mesh = new THREE.Mesh(geom, mat);
-      
-      const u = Math.random();
-      const v = Math.random();
-      const theta = u * 2.0 * Math.PI;
-      const phi = Math.acos(2.0 * v - 1.0);
-      const r = 115000; 
-      
-      mesh.position.set(
-        r * Math.sin(phi) * Math.cos(theta),
-        r * Math.sin(phi) * Math.sin(theta),
-        r * Math.cos(phi)
-      );
-      
-      mesh.lookAt(new THREE.Vector3(0, 0, 0));
-      mesh.rotateZ(Math.random() * Math.PI * 2);
-      this.skyGroup.add(mesh);
+      const pts = new THREE.Points(geo, mat);
+      pts.renderOrder = -5;
+      pts.frustumCulled = false;
+      this.skyGroup.add(pts);
+      this.starMaterials.push(mat);
+    };
+
+    // The real night sky: every naked-eye star where it is, as bright and as coloured as it is
+    const bytes = Uint8Array.from(atob(BSC_DATA), (ch) => ch.charCodeAt(0));
+    const cat = new Uint16Array(bytes.buffer);
+    const n = BSC_COUNT;
+    const pos = new Float32Array(n * 3);
+    const col = new Float32Array(n * 3);
+    const size = new Float32Array(n);
+    const dir = new THREE.Vector3();
+    const c = new THREE.Color();
+    for (let i = 0; i < n; i++) {
+      const ra = cat[i * 4] / 100;
+      const dec = cat[i * 4 + 1] / 100 - 90;
+      const mag = cat[i * 4 + 2] / 100 - 2;
+      const kelvin = cat[i * 4 + 3] * 10;
+      equatorialToGame(ra, dec, dir).multiplyScalar(STAR_DISTANCE);
+      pos.set([dir.x, dir.y, dir.z], i * 3);
+      // Brightness from the magnitude (relative to a first-magnitude star), softened so faint stars still show
+      const flux = Math.pow(10, -0.4 * (mag - 1));
+      const lum = 0.9 * Math.pow(flux, 0.5);
+      starColor(kelvin, c);
+      col.set([c.r * lum, c.g * lum, c.b * lum], i * 3);
+      size[i] = THREE.MathUtils.clamp(1.2 + 2.6 * Math.pow(flux, 0.35), 1.2, 8);
+    }
+    addPoints(pos, col, size);
+
+    // Fainter than the eye resolves: a haze of small stars crowding towards the Milky Way, for long exposures
+    const rand = rng(31337);
+    const gauss = () => (rand() + rand() + rand() + rand() - 2) * 0.87;
+    const faint = 12000;
+    const fPos = new Float32Array(faint * 3);
+    const fCol = new Float32Array(faint * 3);
+    const fSize = new Float32Array(faint).fill(1);
+    for (let i = 0; i < faint; i++) {
+      if (rand() < 0.7) galacticDir(rand() * Math.PI * 2, gauss() * 0.13, dir);
+      else {
+        const u = rand() * 2 - 1, a = rand() * Math.PI * 2;
+        dir.set(Math.sqrt(1 - u * u) * Math.cos(a), u, Math.sqrt(1 - u * u) * Math.sin(a));
+      }
+      dir.multiplyScalar(STAR_DISTANCE * (1.02 + rand() * 0.1));
+      fPos.set([dir.x, dir.y, dir.z], i * 3);
+      starColor(3500 + 9000 * rand() ** 2, c);
+      const lum = 0.02 + 0.05 * rand() ** 2;
+      fCol.set([c.r * lum, c.g * lum, c.b * lum], i * 3);
+    }
+    addPoints(fPos, fCol, fSize);
+  }
+
+  // How bright the night sky behind everything is drawn: the eyes' adaptation (see exposure.js) times how much a
+  // planet's daylit sky lets through (see surface.js)
+  setSkyGain(adapt = this.skyAdapt, through = this.skyThrough) {
+    this.skyAdapt = adapt;
+    this.skyThrough = through;
+    const g = adapt * through;
+    this.skyGroup.traverse((obj) => {
+      const mat = obj.material;
+      if (!mat) return;
+      if (mat.uniforms && mat.uniforms.uGain) {
+        mat.uniforms.uGain.value = g;
+      } else if ('opacity' in mat) {
+        if (obj.userData.baseOpacity === undefined) obj.userData.baseOpacity = mat.opacity;
+        mat.opacity = Math.min(1, obj.userData.baseOpacity * g);
+        obj.visible = g > 0.002;
+      }
     });
   }
 
@@ -812,43 +923,31 @@ export class SolarSystem {
     return new THREE.CanvasTexture(canvas);
   }
 
+  // The galaxies one can see without a telescope, where they really are: Andromeda and Triangulum in the north,
+  // the two Magellanic Clouds in the far south. size: drawn width at 110.000 units; squash: how flat they look;
+  // tilt: position angle on the sky (degrees)
   createGalaxies() {
     const galaxySpecs = [
-      { type: 'spiral', core: '#ff9900', arm: '#00bfff', size: 28000 },
-      { type: 'spiral', core: '#ff00aa', arm: '#00ffaa', size: 24000 },
-      { type: 'elliptical', core: '#ff8800', arm: '', size: 20000 },
-      { type: 'spiral', core: '#ffffff', arm: '#bb33ff', size: 22000 },
-      { type: 'elliptical', core: '#ff4400', arm: '', size: 16000 }
+      { type: 'spiral', ra: 10.6847, dec: 41.269, core: '#ffe6c0', arm: '#a8c0ff', size: 7000, squash: 0.32, tilt: 35, opacity: 0.55 },
+      { type: 'spiral', ra: 23.4621, dec: 30.66, core: '#fff0d8', arm: '#b8c8ff', size: 2200, squash: 0.62, tilt: 23, opacity: 0.35 },
+      { type: 'elliptical', ra: 80.894, dec: -69.756, core: '#e4e8ff', arm: '', size: 16000, squash: 0.8, tilt: 170, opacity: 0.4 },
+      { type: 'elliptical', ra: 13.187, dec: -72.828, core: '#e8ecff', arm: '', size: 8500, squash: 0.6, tilt: 45, opacity: 0.32 },
     ];
-
+    const dir = new THREE.Vector3();
     galaxySpecs.forEach(spec => {
       const tex = this.createGalaxyTexture(spec.type, spec.core, spec.arm);
       const mat = new THREE.MeshBasicMaterial({
         map: tex,
         transparent: true,
-        opacity: 0.82,
+        opacity: spec.opacity,
         blending: THREE.AdditiveBlending,
         depthWrite: false
       });
-
-      const geom = new THREE.PlaneGeometry(spec.size, spec.size);
-      const mesh = new THREE.Mesh(geom, mat);
-
-      const u = Math.random();
-      const v = Math.random();
-      const theta = u * 2.0 * Math.PI;
-      const phi = Math.acos(2.0 * v - 1.0);
-      const r = 110000;
-
-      mesh.position.set(
-        r * Math.sin(phi) * Math.cos(theta),
-        r * Math.sin(phi) * Math.sin(theta),
-        r * Math.cos(phi)
-      );
-
-      mesh.lookAt(new THREE.Vector3(0, 0, 0));
-      mesh.rotateZ(Math.random() * Math.PI * 2);
-
+      const mesh = new THREE.Mesh(new THREE.PlaneGeometry(spec.size, spec.size * spec.squash), mat);
+      equatorialToGame(spec.ra, spec.dec, dir);
+      mesh.position.copy(dir).multiplyScalar(110000);
+      mesh.lookAt(0, 0, 0);
+      mesh.rotateZ(THREE.MathUtils.degToRad(spec.tilt));
       this.skyGroup.add(mesh);
     });
   }
@@ -910,15 +1009,22 @@ export class SolarSystem {
   // How much of the Sun's disc the ship sees: a planet in front of it covers part or all of it.
   // Discs compared by apparent size, so small Mercury in front of the Sun only dims, a near Earth eclipses it.
   updateSunVisibility(shipPos) {
-    const toSun = shipPos.clone().negate();
+    const vis = this.sunVisibilityAt(shipPos);
+    this.sunVisibility = vis;
+    this.sunLight.intensity = SUN_INTENSITY * vis;
+  }
+
+  // Share of the Sun's disc visible from a point (skipping the body the point belongs to)
+  sunVisibilityAt(point, skip = null) {
+    const toSun = point.clone().negate();
     const sunDist = toSun.length();
     toSun.divideScalar(sunDist);
     const sunAngle = Math.asin(Math.min(1, this.planets[0].radius / sunDist));
     let vis = 1;
     const rel = new THREE.Vector3();
     this.planets.forEach((p, i) => {
-      if (i === 0 || !p.radius) return;
-      rel.copy(p.group.position).sub(shipPos);
+      if (i === 0 || !p.radius || p === skip) return;
+      rel.copy(p.group.position).sub(point);
       const along = rel.dot(toSun);
       if (along <= 0 || along > sunDist) return;
       const dist = rel.length();
@@ -936,8 +1042,7 @@ export class SolarSystem {
       }
       vis = Math.min(vis, seen);
     });
-    this.sunVisibility = vis;
-    this.sunLight.intensity = SUN_INTENSITY * vis;
+    return vis;
   }
 
   updateFillLight(shipPos) {
@@ -977,6 +1082,10 @@ export class SolarSystem {
 
     // 1. Planets: orbit, spin, and the orbital velocity the ship's stabilizer and station departures fly relative to
     this.planets.forEach((p, index) => {
+      if (p.parent) {
+        this.updateMoon(p, delta);
+        return;
+      }
       const isSun = index === 0;
 
       if (delta > 0 && !isSun) {
@@ -988,10 +1097,11 @@ export class SolarSystem {
       const r = isSun ? 0 : p.data.realDist * DIST_SCALE;
       const prevX = p.currentPos.x;
       const prevZ = p.currentPos.z;
+      // Counterclockwise seen from ecliptic north (+y), as the real planets go
       p.currentPos.set(
         r * Math.cos(p.angle),
         0,
-        r * Math.sin(p.angle)
+        -r * Math.sin(p.angle)
       );
 
       if (!p.velocity) p.velocity = new THREE.Vector3();
@@ -1001,191 +1111,70 @@ export class SolarSystem {
       p.body.update(delta, this.time);
     });
 
-    // 2. Update Space Stations orbits dynamically outside planet atmosphere
+    // 2. Stations: orbit their planet (or hold still in the belt), turn, blink
     this.stations.forEach(st => {
       const parentPlanet = this.planets[st.planetIndex];
       if (!parentPlanet) return;
-      
-      // Low orbit above the clouds, at a fixed speed along the track
-      const orbitOffset = parentPlanet.radius * STATION_ORBIT;
-      if (delta > 0) {
-        st.orbitAngle += (st.orbitVelocity / orbitOffset) * delta;
-      }
-
-      const offsetPos = new THREE.Vector3(
-        orbitOffset * Math.cos(st.orbitAngle),
-        orbitOffset * 0.25 * Math.sin(st.orbitAngle),
-        orbitOffset * Math.sin(st.orbitAngle)
-      );
-
-      st.mesh.position.copy(parentPlanet.group.position).add(offsetPos);
-      st.mesh.rotation.y += 0.005;
-
-      st.mesh.scale.setScalar(2.0);
+      const r = st.orbitRadius;
+      if (delta > 0 && st.orbitVelocity) st.orbitAngle += (st.orbitVelocity / r) * delta;
+      const offsetPos = st.planetIndex === 0
+        ? new THREE.Vector3(r * Math.cos(st.orbitAngle), 0, r * Math.sin(st.orbitAngle))
+        : new THREE.Vector3(r * Math.cos(st.orbitAngle), r * 0.18 * Math.sin(st.orbitAngle), r * Math.sin(st.orbitAngle));
+      st.mesh.position.copy(st.planetIndex === 0 ? offsetPos : parentPlanet.group.position.clone().add(offsetPos));
+      if (delta > 0) st.visual.animate(delta);
     });
 
-    // 2.5. Update Trade Ships orbits dynamically around their parent planets
-    this.tradeShips.forEach(ts => {
-      const parentPlanet = this.planets[ts.planetIndex];
-      if (!parentPlanet) return;
-
-      // Orbit radius in planet radii, speed in units/s along the track
-      const orbitOffset = parentPlanet.radius * ts.orbitRadiusFactor;
-      if (delta > 0) {
-        ts.localAngle += (ts.orbitSpeed / orbitOffset) * delta;
-      }
-
-      const localPos = new THREE.Vector3(
-        orbitOffset * Math.cos(ts.localAngle),
-        orbitOffset * 0.15 * Math.sin(ts.localAngle * 2.0 + ts.inclinationOffset),
-        orbitOffset * Math.sin(ts.localAngle)
-      );
-
-      ts.mesh.position.copy(parentPlanet.group.position).add(localPos);
-
-      // Rotate ship so its nose points along the tangent of its orbit
-      const tangent = new THREE.Vector3(
-        -Math.sin(ts.localAngle),
-        0.30 * Math.cos(ts.localAngle * 2.0 + ts.inclinationOffset),
-        Math.cos(ts.localAngle)
-      ).normalize();
-
-      // Align ship forward Z-axis (0,0,-1) to tangent direction
-      const targetRotation = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, -1), tangent);
-      ts.mesh.quaternion.copy(targetRotation);
-    });
-
-    // 3. Update Asteroid orbits in the belt
-    this.asteroids.forEach(ast => {
-      if (delta > 0) {
-        ast.angle += ast.orbitSpeed * delta;
-      }
-      
-      // Scale asteroid orbit and size based on current scale mode
-      const radius = ast.orbitRadiusReal * scale.distScale;
-      const height = ast.heightReal * scale.distScale;
-      
-      // Give a minimum size of 0.08 units in realistic scale so they are targetable
-      let size = ast.sizeReal * scale.sizeScale;
-      if (this.scaleMode === 'realistic') {
-        size = Math.max(0.08, size * 2.5); // enlarged slightly for gameplay fun
-      } else if (this.scaleMode === 'arcade') {
-        size = Math.max(0.15, size * 6.0); // visible asteroids for arcade flight
-      } else if (this.scaleMode === 'orrery') {
-        size = size * 1.5;
-      } else {
-        // visual
-        size = size * 50.0;
-      }
-
-      ast.mesh.position.set(
-        radius * Math.cos(ast.angle),
-        height,
-        radius * Math.sin(ast.angle)
-      );
-      ast.mesh.scale.setScalar(size);
-      ast.size = size;
-
-      if (delta > 0) {
+    // 3. Rocks hold their place in their field and tumble
+    if (delta > 0) {
+      this.asteroids.forEach(ast => {
         ast.mesh.rotation.x += ast.spin.x * delta;
         ast.mesh.rotation.y += ast.spin.y * delta;
         ast.mesh.rotation.z += ast.spin.z * delta;
-      }
-    });
+      });
+    }
   }
 
-  cycleTarget(currentSelection, ship) {
-    const majorTargets = [...this.planets, ...this.stations, ...this.tradeShips];
+  // T: everything worth flying to or shooting at, ordered by how close it is to the crosshair
+  cycleTarget(currentSelection, ship, extra = []) {
+    const majorTargets = [...this.planets, ...this.stations.filter((s) => !s.hidden), ...extra];
     if (majorTargets.length === 0) return null;
 
     if (ship) {
-      // Calculate ship forward vector
       const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(ship.quaternion);
-      
-      // Calculate dot alignment for all targets
       majorTargets.forEach(t => {
         const tPos = t.group ? t.group.position : t.mesh.position;
         const toTarget = tPos.clone().sub(ship.position).normalize();
         t.tempDot = forward.dot(toTarget);
       });
-      
-      // Sort: highest dot first (closest to crosshair / most focused)
       majorTargets.sort((a, b) => b.tempDot - a.tempDot);
     }
 
     if (!currentSelection) return majorTargets[0];
-
-    const currentIndex = majorTargets.findIndex(t => t.name === currentSelection.name);
-    if (currentIndex === -1) {
-      return majorTargets[0];
-    }
-    const nextIndex = (currentIndex + 1) % majorTargets.length;
-    return majorTargets[nextIndex];
+    const currentIndex = majorTargets.indexOf(currentSelection);
+    if (currentIndex === -1) return majorTargets[0];
+    return majorTargets[(currentIndex + 1) % majorTargets.length];
   }
 
-  findTargetUnderCrosshair(ship) {
+  // What sits under the crosshair: ships first (they matter most), then stations, rocks and planets
+  findTargetUnderCrosshair(ship, ships = []) {
     const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(ship.quaternion);
-    
     let bestTarget = null;
-    let bestDot = 0.985; // Must be within ~10 degrees of crosshair center
-    
-    // Check planets
-    this.planets.forEach(p => {
-      const pPos = p.group.position;
-      const toTarget = pPos.clone().sub(ship.position);
-      const dir = toTarget.clone().normalize();
-      const dot = forward.dot(dir);
-      
+    let bestDot = 0.985; // within ~10 degrees of the crosshair
+    const consider = (obj, pos, maxDist, bonus = 0) => {
+      const toTarget = pos.clone().sub(ship.position);
+      const dist = toTarget.length();
+      if (maxDist && dist > maxDist) return;
+      const dot = forward.dot(toTarget.divideScalar(dist || 1)) + bonus;
       if (dot > bestDot) {
         bestDot = dot;
-        bestTarget = p;
+        bestTarget = obj;
       }
-    });
-    
-    // Check stations
-    this.stations.forEach(st => {
-      const stPos = st.mesh.position;
-      const toTarget = stPos.clone().sub(ship.position);
-      const dir = toTarget.clone().normalize();
-      const dot = forward.dot(dir);
-      
-      if (dot > bestDot) {
-        bestDot = dot;
-        bestTarget = st;
-      }
-    });
+    };
 
-    // Check trade ships
-    this.tradeShips.forEach(ts => {
-      const tsPos = ts.mesh.position;
-      const toTarget = tsPos.clone().sub(ship.position);
-      const dist = toTarget.length();
-      if (dist < 1200) {
-        const dir = toTarget.clone().normalize();
-        const dot = forward.dot(dir);
-        
-        if (dot > bestDot) {
-          bestDot = dot;
-          bestTarget = ts;
-        }
-      }
-    });
-
-    // Check asteroids (only within 600 units distance to avoid targeting invisible rocks light-years away)
-    this.asteroids.forEach(ast => {
-      const astPos = ast.mesh.position;
-      const toTarget = astPos.clone().sub(ship.position);
-      const dist = toTarget.length();
-      if (dist < 600) {
-        const dir = toTarget.clone().normalize();
-        const dot = forward.dot(dir);
-        
-        if (dot > bestDot) {
-          bestDot = dot;
-          bestTarget = ast;
-        }
-      }
-    });
+    this.planets.forEach(p => consider(p, p.group.position));
+    this.stations.forEach(st => { if (!st.hidden) consider(st, st.mesh.position); });
+    ships.forEach(n => consider(n, n.pos, ship.sensorRange || 2200, 0.004));
+    this.asteroids.forEach(ast => consider(ast, ast.mesh.position, 600));
 
     // Close to a planet its disc fills the view: aiming anywhere on it picks it (the nearest one in line)
     if (!bestTarget) {
@@ -1201,7 +1190,6 @@ export class SolarSystem {
         }
       });
     }
-
     return bestTarget;
   }
 }

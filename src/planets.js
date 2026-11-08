@@ -7,6 +7,7 @@ import {
 // Testing aid: ?bake=0.25 bakes the surface maps at a quarter of the resolution (software renderers)
 const BAKE_SCALE = THREE.MathUtils.clamp(Number(new URLSearchParams(window.location.search).get('bake')) || 1, 0.03125, 1);
 const BAKE_STRIPS = 8; // maps are baked strip by strip, so a slow GPU never stalls on one huge draw
+const SUN_RADIUS = 180; // drawn radius of the Sun, for the size of its disc in eclipses
 
 const SURFACE_DEFINES = {
   Mercury: { MERCURY: '', HEIGHT_IN_ALPHA: '' },
@@ -16,10 +17,80 @@ const SURFACE_DEFINES = {
   Jupiter: { GAS: '', JUPITER: '' },
   Saturn: { GAS: '', SATURN: '' },
   Uranus: { GAS: '', URANUS: '' },
-  Neptune: { GAS: '', NEPTUNE: '' }
+  Neptune: { GAS: '', NEPTUNE: '' },
+  Moon: { LUNA: '', HEIGHT_IN_ALPHA: '' },
+  Io: { IO: '', HEIGHT_IN_ALPHA: '' },
+  Europa: { EUROPA: '', HEIGHT_IN_ALPHA: '' },
+  Titan: { TITAN: '' }
+};
+
+// Height range packed into the ground data of the bodies one can fly over (bake pass 2)
+const GROUND_RANGE = {
+  Mercury: [-0.6, 0.6],
+  Venus: [-0.4, 1.0],
+  Earth: [0, 1.0],
+  Mars: [-0.8, 1.8]
 };
 
 const _q = new THREE.Quaternion();
+
+// Bake pass 2 and read it back: heights, open water and cloud cover for the CPU (terrain and collisions)
+function bakeGroundData(renderer, defines, seed, width, range) {
+  const height = width / 2;
+  const target = new THREE.WebGLRenderTarget(width, height, {
+    type: THREE.UnsignedByteType,
+    format: THREE.RGBAFormat,
+    depthBuffer: false,
+    generateMipmaps: false,
+    minFilter: THREE.NearestFilter,
+    magFilter: THREE.NearestFilter
+  });
+  const material = new THREE.ShaderMaterial({
+    defines,
+    vertexShader: BAKE_VERTEX,
+    fragmentShader: BAKE_FRAGMENT,
+    uniforms: {
+      uPass: { value: 2 },
+      uSeed: { value: seed },
+      uTile: { value: new THREE.Vector4() },
+      uGroundRange: { value: new THREE.Vector2(range[0], range[1]) }
+    },
+    depthTest: false,
+    depthWrite: false
+  });
+  const quad = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material);
+  quad.frustumCulled = false;
+  const scene = new THREE.Scene();
+  scene.add(quad);
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const previousTarget = renderer.getRenderTarget();
+  const previousAutoClear = renderer.autoClear;
+  renderer.autoClear = false;
+  renderer.setRenderTarget(target);
+  for (let i = 0; i < BAKE_STRIPS; i++) {
+    material.uniforms.uTile.value.set(0, i / BAKE_STRIPS, 1, 1 / BAKE_STRIPS);
+    renderer.render(scene, camera);
+  }
+  const raw = new Uint8Array(width * height * 4);
+  renderer.readRenderTargetPixels(target, 0, 0, width, height, raw);
+  renderer.setRenderTarget(previousTarget);
+  renderer.autoClear = previousAutoClear;
+  quad.geometry.dispose();
+  material.dispose();
+  target.dispose();
+
+  // Rows run from the south pole (v = 0) to the north pole, as in the shaders' sphereUV
+  const heights = new Float32Array(width * height);
+  const water = new Uint8Array(width * height); // 0..255
+  const cloud = new Uint8Array(width * height);
+  const span = range[1] - range[0];
+  for (let i = 0; i < width * height; i++) {
+    heights[i] = range[0] + ((raw[i * 4] * 256 + raw[i * 4 + 1]) / 65535) * span;
+    water[i] = raw[i * 4 + 2];
+    cloud[i] = raw[i * 4 + 3];
+  }
+  return { width, height, heights, water, cloud };
+}
 
 function bakeMap(renderer, defines, pass, width, type, seed) {
   const height = width / 2;
@@ -181,6 +252,9 @@ function createCoronaTexture() {
 export class PlanetBody {
   constructor(renderer, data, seed) {
     this.data = data;
+    this.renderer = renderer;
+    this.seed = seed;
+    this.ground = undefined; // baked on the first flight over this body (see groundData)
     this.radius = data.radius;
     this.isSun = data.name === 'Sun';
     this.group = new THREE.Group();
@@ -217,7 +291,16 @@ export class PlanetBody {
       uBetaR: { value: new THREE.Vector3() },
       uBetaM: { value: 0 },
       uMieG: { value: 0.76 },
-      uSunE: { value: 8 }
+      uSunE: { value: 8 },
+      uMieCol: { value: new THREE.Vector3(1, 1, 1) },
+      uMieExt: { value: new THREE.Vector3(1.1, 1.1, 1.1) },
+      // Eclipses: bodies that can stand between this one and the Sun (set each frame by the solar system)
+      uCasters: { value: [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()] },
+      uSunAng: { value: 0.05 },
+      uUmbraTint: { value: new THREE.Vector3().fromArray(data.umbraTint || [0, 0, 0]) },
+      // Planetshine: light the parent planet's day side throws onto a moon's night side
+      uShineDir: { value: new THREE.Vector3(0, 1, 0) },
+      uShineCol: { value: new THREE.Vector3() }
     });
 
     if (atmo) {
@@ -229,6 +312,8 @@ export class PlanetBody {
       u.uBetaM.value = atmo.tauM / u.uHM.value;
       u.uMieG.value = atmo.g;
       u.uSunE.value = atmo.sunE;
+      if (atmo.mieCol) u.uMieCol.value.fromArray(atmo.mieCol);
+      if (atmo.mieExt) u.uMieExt.value.fromArray(atmo.mieExt);
     }
 
     if (this.isSun) {
@@ -255,11 +340,19 @@ export class PlanetBody {
     const defines = { ...SURFACE_DEFINES[data.name] };
     const heightMap = 'HEIGHT_IN_ALPHA' in defines;
     u.uColorMap.value = bakeMap(renderer, defines, 0, texWidth, heightMap ? THREE.HalfFloatType : THREE.UnsignedByteType, seed);
-    if (data.name === 'Earth') {
-      u.uAuxMap.value = bakeMap(renderer, defines, 1, Math.max(256, Math.round(2048 * BAKE_SCALE)), THREE.HalfFloatType, seed);
+    if (data.name === 'Earth' || data.auxMap) {
+      u.uAuxMap.value = bakeMap(renderer, defines, 1, Math.max(256, Math.round((data.auxMap || 2048) * BAKE_SCALE)), THREE.HalfFloatType, seed);
     }
 
     if (atmo) defines.HAS_ATMO = '';
+    // Coloured haze, and more steps through a deep one
+    const atmoDefines = {};
+    if (atmo && atmo.mieCol) atmoDefines.MIE_TINT = '';
+    if (atmo && atmo.steps) {
+      atmoDefines.ATMO_STEPS = String(atmo.steps);
+      atmoDefines.ATMO_FIXED_STEP = '';
+    }
+    Object.assign(defines, atmoDefines);
     if (data.rings && data.name === 'Saturn') defines.RING_SHADOW = '';
 
     if (data.rings) {
@@ -295,6 +388,7 @@ export class PlanetBody {
       this.atmosphere = new THREE.Mesh(
         new THREE.SphereGeometry(1, 160, 80),
         new THREE.ShaderMaterial({
+          defines: atmoDefines,
           uniforms: u,
           vertexShader: BODY_VERTEX,
           fragmentShader: ATMOSPHERE_FRAGMENT,
@@ -330,6 +424,19 @@ export class PlanetBody {
     }
   }
 
+  // Heights, water and clouds on the CPU, for flying low over the body; null for bodies without a ground
+  groundData() {
+    if (this.ground !== undefined) return this.ground;
+    const range = GROUND_RANGE[this.data.name];
+    if (!range || !this.renderer) {
+      this.ground = null;
+      return null;
+    }
+    const width = Math.max(256, Math.round(2048 * BAKE_SCALE));
+    this.ground = bakeGroundData(this.renderer, { ...SURFACE_DEFINES[this.data.name] }, this.seed, width, range);
+    return this.ground;
+  }
+
   // Spin and animation, frame-rate independent
   update(delta, time) {
     this.uniforms.uTime.value = time;
@@ -348,6 +455,7 @@ export class PlanetBody {
     u.uCamLocal.value.copy(camera.position).sub(center);
     if (this.isSun) return;
     u.uSunDir.value.copy(center).negate().normalize();
+    u.uSunAng.value = Math.asin(Math.min(1, SUN_RADIUS / Math.max(center.length(), SUN_RADIUS)));
     this.mesh.getWorldQuaternion(_q).invert();
     u.uSunDirObj.value.copy(u.uSunDir.value).applyQuaternion(_q);
     this.tilt.getWorldQuaternion(_q);

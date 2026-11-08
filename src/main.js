@@ -5,21 +5,41 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { controls } from './controls';
 import { spaceAudio } from './audio';
-import { Spaceship, STATION_HOLD_STANDOFF, planetHoldDistance, arrivalRadius } from './spaceship';
-import { SolarSystem, atmosphereTop, flightFloor } from './solarSystem';
+import { sfx } from './sfx';
+import { music } from './music';
+import { Spaceship, planetHoldDistance, arrivalRadius, stationHoldStandoff, stationDockRange, pilotSettings } from './spaceship';
+import { SolarSystem, atmosphereTop, flightFloor, surfaceEntryRadius } from './solarSystem';
+import { SurfaceFlight } from './surface';
 import { UI } from './ui';
 import { displayName } from './names';
-import { loadGame, saveGame, clearGame } from './save';
+import { loadGame, saveGame, clearGame, loadSettings, saveSettings } from './save';
+import { FX } from './fx';
+import { Combat } from './combat';
+import { NPCManager } from './npc';
+import { Law } from './law';
+import { Economy } from './economy';
+import { Missions } from './missions';
+import { Encounters } from './encounters';
+import { Comm } from './comm';
+import { CombatHUD } from './combatHud';
+import { MissileCam } from './missileCam';
+import { GOODS, emptyCargo, STARTING_DEBT } from './world';
+import { DIFFICULTIES, difficultyOf } from './difficulty';
+import { EyeAdaptation } from './exposure';
+import { SolarStorm } from './solarStorm';
 import './style.css';
 
 const AUTOSAVE_INTERVAL = 15; // seconds
-const WARP_STATION_STANDOFF = STATION_HOLD_STANDOFF; // jump exit at the autopilot's waiting point, outside docking range
 const WARP_BRAKE_TIME = 1.0; // seconds from leaving the jump to standing still
 const WARP_CLEARANCE = 2.5;  // a planet jump's braking path keeps this far from other bodies' surfaces
 const AIM_TURN = THREE.MathUtils.degToRad(3);   // the nose must turn this far before aiming picks a new target
 const AIM_CONE = THREE.MathUtils.degToRad(10);  // the crosshair's reach, as in findTargetUnderCrosshair
-const PLANET_PREFERENCE_RADII = 3;             // farther out (in planet radii), aiming at a planet's station or freighter picks the planet
+const PLANET_PREFERENCE_RADII = 3;             // farther out (in planet radii), aiming at a planet's station picks the planet
 const HEAT_SPEED = 25;                         // hitting the atmosphere floor faster than this (units/s) scorches the shield
+const RAM_SPEED = 8;                           // bumping into things slower than this does no damage
+const ICE_FUEL = 4;                            // fuel units from one ton of ice
+const TOW_PRICE = 600;
+const TRACTOR_RANGE = 170;
 const ZERO = new THREE.Vector3();
 
 // Shortest distance from `point` to the segment that starts at `start` and moves by `travel`
@@ -29,89 +49,73 @@ function distanceToSegment(point, start, travel) {
   return start.clone().addScaledVector(travel, t).distanceTo(point);
 }
 
+const LOOT_COLORS = { ore: 0x9a6038, ice: 0x9fd0ff, food: 0x6fbf50, med: 0xf0f0f0, tech: 0x40c0ff, lux: 0xd0a0ff, stims: 0xff4060, arms: 0xff3020 };
+
 class Game {
   constructor() {
-    this.scene = null;
-    this.camera = null;
-    this.renderer = null;
-    this.clock = null;
-    
-    // Systems
-    this.ship = null;
-    this.solarSystem = null;
-    this.ui = null;
-    
     this.simRunning = false;
-    
-    // Cinematic Warp Jump state variables
+    this.paused = false;
     this.warpState = null; // 'charging', 'hyper', 'decelerating'
     this.warpTimer = 0;
     this.warpTarget = null;
-    
-    // Docking interaction variables
     this.dockableStation = null;
-    
-    // Explosions particles pool
-    this.explosions = [];
-
-    // Loot crates pool
     this.loots = [];
-    
-    // Initialize WebGL
+    this.discovered = new Set();
+    this.home = 'Erde Orbital-Station';
+    this.displayName = displayName;
+
     this.initWebGL();
 
-    // Create tractor beam visual effect line
+    // Tractor beam visual
     const lineGeom = new THREE.BufferGeometry();
-    const linePoints = [new THREE.Vector3(), new THREE.Vector3()];
-    lineGeom.setFromPoints(linePoints);
-    const lineMat = new THREE.LineBasicMaterial({
-      color: 0x00f0ff,
-      transparent: true,
-      opacity: 0.0,
-      blending: THREE.AdditiveBlending
-    });
-    this.tractorBeamLine = new THREE.Line(lineGeom, lineMat);
+    lineGeom.setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+    this.tractorBeamLine = new THREE.Line(lineGeom, new THREE.LineBasicMaterial({ color: new THREE.Color(0.4, 2.2, 2.6), transparent: true, opacity: 0, blending: THREE.AdditiveBlending }));
+    this.tractorBeamLine.frustumCulled = false;
     this.scene.add(this.tractorBeamLine);
-    
-    // Instantiate controllers
+
+    // World and its systems
     this.solarSystem = new SolarSystem(this.scene, this.renderer);
     this.ship = new Spaceship(this.scene, this.renderer);
-    
-    // Restore the pilot career, then spawn near Earth with its station locked as first destination
+    this.ship.game = this;
+    this.fx = new FX(this.scene);
+    this.combat = new Combat(this);
+    this.npcs = new NPCManager(this);
+    this.law = new Law(this);
+    this.economy = new Economy(this);
+    this.missions = new Missions(this);
+    this.encounters = new Encounters(this);
+    this.comm = new Comm(this);
+    this.hud = new CombatHUD(this);
+    this.missileCam = new MissileCam(this);
+    this.surface = new SurfaceFlight(this);
+    this.eyes = new EyeAdaptation(this);
+    this.storm = new SolarStorm(this);
+    sfx.listener = this.camera;
+
+    this.settings = { sensitivity: 1, invertY: false, music: true, musicVolume: 0.7, sound: true, ...loadSettings() };
+    this.applySettings();
+
+    // Restore the pilot career, then spawn at the home station with it locked as first destination
+    this.difficulty = 'normal';
     this.savedGame = loadGame();
     if (this.savedGame) this.applySave(this.savedGame);
     this.autosaveTimer = 0;
-    this.placeShipAtEarth();
+    this.placeShipAtHome();
 
     this.ui = new UI(this);
-    
     this.setupControlBinds();
-    
+
     window.addEventListener('resize', this.onWindowResize.bind(this), false);
-    
     this.clock = new THREE.Clock();
     this.tick();
   }
 
   initWebGL() {
     this.scene = new THREE.Scene();
-    
-    // Logarithmic depth: the cockpit at 0.05 units and Neptune 45.000 units away share one depth buffer,
-    // and cloud decks a fraction of a unit over the ground never flicker
-    this.camera = new THREE.PerspectiveCamera(
-      65,
-      window.innerWidth / window.innerHeight,
-      0.05,
-      150000
-    );
-    
+    // Logarithmic depth: the cockpit at 0.05 units and Neptune 45.000 units away share one depth buffer
+    this.camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.05, 150000);
     const canvas = document.getElementById('space-canvas');
-    this.renderer = new THREE.WebGLRenderer({
-      canvas: canvas,
-      antialias: true,
-      logarithmicDepthBuffer: true,
-      powerPreference: "high-performance"
-    });
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, logarithmicDepthBuffer: true, powerPreference: 'high-performance' });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
@@ -121,185 +125,323 @@ class Game {
 
     // Post-processing: only HDR sources (sun, lasers, explosion cores) cross the bloom threshold
     this.composer = new EffectComposer(this.renderer);
-    this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(window.innerWidth, window.innerHeight),
-      0.75, // strength
-      0.5,  // radius
-      0.9   // threshold
-    );
+    this.renderPass = new RenderPass(this.scene, this.camera);
+    this.composer.addPass(this.renderPass);
+    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.75, 0.5, 0.9);
     this.composer.addPass(this.bloomPass);
     this.composer.addPass(new OutputPass());
   }
 
+  // ----- career --------------------------------------------------------------------------------
+
   applySave(save) {
-    if (typeof save.credits === 'number') this.ship.credits = save.credits;
-    if (save.cargo) Object.assign(this.ship.cargo, save.cargo);
-    if (save.upgrades) Object.assign(this.ship.upgrades, save.upgrades);
-    this.ship.applyUpgrades();
-    this.ship.shield = this.ship.maxShield;
+    const ship = this.ship;
+    this.difficulty = DIFFICULTIES[save.difficulty] ? save.difficulty : 'normal';
+    if (typeof save.credits === 'number') ship.credits = save.credits;
+    ship.cargo = { ...emptyCargo(), ...(save.cargo || {}) };
+    if (save.upgrades) Object.assign(ship.upgrades, save.upgrades);
+    ship.applyUpgrades();
+    ship.shield = ship.maxShield;
+    ship.hull = typeof save.hull === 'number' ? Math.min(save.hull, ship.maxHull) : ship.maxHull;
+    if (save.systems) Object.assign(ship.systems, save.systems);
+    if (typeof save.fuel === 'number') ship.fuel = save.fuel;
+    if (typeof save.missiles === 'number') ship.missiles = save.missiles;
+    if (typeof save.flares === 'number') ship.flares = save.flares;
+    ship.debt = typeof save.debt === 'number' ? save.debt : STARTING_DEBT;
+    this.law.load(save.law);
+    this.economy.load(save.economy);
+    this.missions.load(save.missions);
+    (save.discovered || []).forEach((n) => this.discover(n, true));
+    if (save.home && this.solarSystem.stations.some((s) => s.name === save.home)) this.home = save.home;
   }
 
   saveProgress(extra = {}) {
-    saveGame(this.ship, extra);
+    const ship = this.ship;
+    saveGame(ship, {
+      ...extra,
+      hull: ship.hull, systems: ship.systems, fuel: ship.fuel, missiles: ship.missiles, flares: ship.flares, debt: ship.debt,
+      law: this.law.toSave(), economy: this.economy.toSave(), missions: this.missions.toSave(),
+      discovered: [...this.discovered], home: this.home, difficulty: this.difficulty,
+    });
   }
 
-  startNewCareer() {
+  startNewCareer(difficulty = 'normal') {
     clearGame();
     this.savedGame = null;
-    this.ship.credits = 1000;
-    this.ship.cargo = { ore: 0, ice: 0, tech: 0 };
-    this.ship.upgrades = { engine: 1, shield: 1, weapon: 1, cargo: 1 };
-    this.ship.applyUpgrades();
-    this.ship.shield = this.ship.maxShield;
+    this.difficulty = DIFFICULTIES[difficulty] ? difficulty : 'normal';
+    const d = difficultyOf(this);
+    const ship = this.ship;
+    ship.credits = d.credits;
+    ship.debt = d.debt;
+    ship.cargo = emptyCargo();
+    const t = d.upgradeTier;
+    ship.upgrades = { engine: t, shield: t, weapon: t, cargo: t, armor: t, sensor: t };
+    ship.applyUpgrades();
+    ship.fullRepair();
+    ship.fuel = ship.maxFuel;
+    ship.missiles = d.fullAmmo ? ship.maxMissiles : d.noMissiles ? 0 : 2;
+    ship.flares = d.fullAmmo ? ship.maxFlares : 4;
+    this.law.reset();
+    this.economy.reset();
+    this.missions.reset();
+    this.encounters.reset();
+    this.npcs.clearAll();
+    this.discovered.clear();
+    this.solarSystem.stations.forEach((s) => { if (s.def.hidden) { s.hidden = true; s.mesh.visible = false; } });
+    this.home = 'Erde Orbital-Station';
     this.saveProgress({ tutorialDone: false });
+  }
+
+  // A hidden place becomes known: on the nav map, targetable, visible
+  discover(name, silent = false) {
+    if (this.discovered.has(name)) return;
+    this.discovered.add(name);
+    const st = this.solarSystem.stations.find((s) => s.name === name);
+    if (st) {
+      st.hidden = false;
+      st.mesh.visible = true;
+    }
+    if (!silent) {
+      this.hud.toast(`Neuer Navpunkt: ${displayName(name)}`, 'info');
+      this.navRefresh();
+    }
+  }
+
+  navRefresh() {
+    if (this.ui && this.ui.navMap) this.ui.navMap.buildEntries();
+  }
+
+  applySettings() {
+    const s = this.settings;
+    pilotSettings.sensitivity = s.sensitivity;
+    pilotSettings.invertY = s.invertY;
+    music.setEnabled(s.music);
+    music.setVolume(s.musicVolume);
+    saveSettings(s);
+  }
+
+  // ----- placing the ship ------------------------------------------------------------------------
+
+  placeShipAtHome() {
+    const st = this.solarSystem.stations.find((s) => s.name === this.home);
+    if (!st || st.name === 'Erde Orbital-Station') this.placeShipAtEarth();
+    else this.placeShipAtStation(st);
   }
 
   placeShipAtEarth() {
     const earth = this.solarSystem.planets[3];
-    const earthStation = this.solarSystem.stations.find(st => st.planetIndex === 3);
-    if (!earth) {
-      this.ship.targetObject = this.solarSystem.planets[0];
-      return;
-    }
-    // Start over Earth's day side, turned off the line to the Sun so the terminator shows,
-    // with the station just ahead, low over the clouds
+    const earthStation = this.solarSystem.stations.find(st => st.name === 'Erde Orbital-Station');
+    // Over Earth's day side, turned off the line to the Sun so the terminator shows, the station just ahead
     const up = new THREE.Vector3(0, 1, 0);
     const out = earth.currentPos.clone().negate().setY(0).normalize()
       .applyAxisAngle(up, THREE.MathUtils.degToRad(55))
       .addScaledVector(up, 0.12)
       .normalize();
-    this.ship.position.copy(earth.currentPos).addScaledVector(out, earth.radius * 1.55);
+    this.ship.position.copy(earth.currentPos).addScaledVector(out, earth.radius * 1.75);
     if (earthStation) {
-      earthStation.orbitAngle = Math.atan2(out.z, out.x) + 0.3;
+      earthStation.orbitAngle = Math.atan2(out.z, out.x) + 0.32;
       this.solarSystem.update(0);
     }
-    // Nose between the station and Earth: the station ahead, the planet filling the lower view
-    const lookAt = earthStation ? earthStation.mesh.position.clone().lerp(earth.currentPos, 0.45) : earth.currentPos;
-    const look = new THREE.Matrix4().lookAt(this.ship.position, lookAt, up);
-    this.ship.quaternion.setFromRotationMatrix(look);
-    this.ship.mesh.position.copy(this.ship.position);
-    this.ship.mesh.quaternion.copy(this.ship.quaternion);
+    const lookAt = earthStation ? earthStation.mesh.position.clone().lerp(earth.currentPos, 0.35) : earth.currentPos;
+    this.orientShip(lookAt);
     this.ship.velocity.copy(earth.velocity || ZERO);
     this.ship.targetObject = earthStation || earth;
   }
 
+  // Just outside a station, facing it, at rest relative to it
+  placeShipAtStation(st) {
+    const out = this.ship.stationOutward(st, this.solarSystem);
+    const side = new THREE.Vector3(0, 1, 0).cross(out).normalize();
+    this.ship.position.copy(st.mesh.position).addScaledVector(out, st.size + 90).addScaledVector(side, 40);
+    this.orientShip(st.mesh.position);
+    const planet = this.solarSystem.planets[st.planetIndex];
+    this.ship.velocity.copy(planet.velocity || ZERO);
+    this.ship.targetObject = st;
+  }
+
+  orientShip(lookAt) {
+    const look = new THREE.Matrix4().lookAt(this.ship.position, lookAt, new THREE.Vector3(0, 1, 0));
+    this.ship.quaternion.setFromRotationMatrix(look);
+    this.ship.mesh.position.copy(this.ship.position);
+    this.ship.mesh.quaternion.copy(this.ship.quaternion);
+    this.ship.stick.x = this.ship.stick.y = 0;
+  }
+
+  // ----- input -----------------------------------------------------------------------------------
+
+  flying() {
+    return this.simRunning && !this.paused && !this.ship.isDocked && !this.ship.isDestroyed;
+  }
+
   setupControlBinds() {
-    // Target cycle
     controls.onPress('t', () => {
-      if (!this.simRunning || this.ship.isDocked || this.ship.isDestroyed) return;
-      const nextTarget = this.solarSystem.cycleTarget(this.ship.targetObject, this.ship);
-      this.setTarget(nextTarget);
+      if (!this.flying()) return;
+      const extra = this.npcs.ships.filter((n) => n.pos.distanceTo(this.ship.position) < this.ship.sensorRange);
+      const dest = this.missions.destination();
+      if (dest && dest.kind === 'waypoint') extra.push(dest);
+      this.setTarget(this.solarSystem.cycleTarget(this.ship.targetObject, this.ship, extra));
       spaceAudio.playBeep();
     });
 
-    // Target under crosshair [R]
+    // R: the nearest ship that is shooting at us, or whatever is under the crosshair
     controls.onPress('r', () => {
-      if (!this.simRunning || this.ship.isDocked || this.ship.isDestroyed) return;
-      const aimedTarget = this.solarSystem.findTargetUnderCrosshair(this.ship);
-      if (aimedTarget) {
-        this.setTarget(aimedTarget);
+      if (!this.flying()) return;
+      const hostile = this.nearestHostile();
+      const aimed = hostile || this.solarSystem.findTargetUnderCrosshair(this.ship, this.npcs.ships);
+      if (aimed) {
+        this.setTarget(aimed);
         spaceAudio.playBeep();
       } else {
-        spaceAudio.playAutopilotAlert(false); // Play negative feedback beep
+        sfx.denied();
       }
     });
 
-    // Flight Assist
+    // J: the current mission's destination
+    controls.onPress('j', () => {
+      if (!this.flying()) return;
+      const dest = this.missions.destination();
+      if (dest) {
+        this.setTarget(dest);
+        spaceAudio.playBeep();
+      } else {
+        sfx.denied();
+      }
+    });
+
     controls.onPress('f', () => {
-      if (!this.simRunning || this.ship.isDocked || this.ship.isDestroyed) return;
+      if (!this.flying()) return;
       this.ship.flightAssist = !this.ship.flightAssist;
       spaceAudio.playBeep();
     });
 
-    // Camera Mode
     controls.onPress('c', () => {
-      if (!this.simRunning || this.ship.isDocked || this.ship.isDestroyed) return;
+      if (!this.flying()) return;
       this.ship.cameraMode = this.ship.cameraMode === 'cockpit' ? 'chase' : 'cockpit';
       spaceAudio.playBeep();
     });
 
-    // Scale Mode (Locked in Arcade)
-    controls.onPress('v', () => {
-      if (!this.simRunning || this.ship.isDocked || this.ship.isDestroyed) return;
-      spaceAudio.playAutopilotAlert(false); // play warning beep since lock is active
+    controls.onPress('v', () => { if (this.flying()) this.ship.launchMissile(); });
+    controls.onPress('rmb', () => { if (this.flying()) this.ship.launchMissile(); });
+    controls.onPress('k', () => { if (this.flying()) this.ship.dropFlare(); });
+    controls.onPress('m', () => this.toggleAudio());
+    controls.onPress('o', () => {
+      this.settings.music = !this.settings.music;
+      this.applySettings();
+      this.hud.toast(`Musik ${this.settings.music ? 'an' : 'aus'}`, 'info');
     });
 
-    // Audio Mute
-    controls.onPress('m', () => {
-      const isMuted = !spaceAudio.muted;
-      spaceAudio.setMute(isMuted);
-    });
-
-    // Help Manual [H]
     controls.onPress('h', () => {
-      if (!this.simRunning || this.ship.isDocked || this.ship.isDestroyed) return;
+      if (!this.flying()) return;
       this.ui.toggleHelpGuide();
     });
 
-    // Fly to the target [X] (J does the same)
     controls.onPress('x', () => this.flyToTarget());
-    controls.onPress('j', () => this.flyToTarget());
 
-    // Docking Trigger [G]
     controls.onPress('g', () => {
-      if (!this.simRunning || this.ship.isDestroyed || this.ui.navMap.isOpen) return;
-      
-      if (this.ship.isDocked) {
-        this.undockShip();
-      } else if (this.dockableStation) {
-        this.dockShip();
-      }
+      if (!this.simRunning || this.ship.isDestroyed || this.ui.navMap.isOpen || this.paused) return;
+      if (this.ship.isDocked) this.undockShip();
+      else if (this.dockableStation) this.dockShip();
     });
 
-    // Nav computer [N]
-    controls.onPress('n', () => this.ui.navMap.toggle());
+    controls.onPress('n', () => { if (!this.paused) this.ui.navMap.toggle(); });
+    controls.onPress('i', () => { if (this.flying() && !this.ui.navMap.isOpen) this.ui.openPause('log'); });
     controls.onPress('up', () => { if (this.ui.navMap.isOpen) this.ui.navMap.moveSelection(-1); });
     controls.onPress('down', () => { if (this.ui.navMap.isOpen) this.ui.navMap.moveSelection(1); });
     controls.onPress('enter', () => { if (this.ui.navMap.isOpen) this.ui.navMap.warp(); });
-    controls.onPress('escape', () => this.ui.navMap.close(false));
+    controls.onPress('escape', () => {
+      if (this.ui.difficultyOpen) this.ui.closeDifficulty();
+      else if (this.ship.isDocked && this.ui.stationUI.isOpen) this.ui.stationUI.back();
+      else this.ui.navMap.close(false);
+    });
+    ['1', '2', '3', '4'].forEach((key, i) => controls.onPress(key, () => {
+      if (this.ui.difficultyOpen) { if (i < 3) this.ui.chooseDifficulty(['easy', 'normal', 'hard'][i]); return; }
+      if (!this.simRunning || this.paused) return;
+      if (this.ship.isDocked && this.ui.stationUI.isOpen) this.ui.stationUI.answer(i);
+      else this.comm.answer(i);
+    }));
 
-    // Respawn Click Listener
-    const respawnBtn = document.getElementById('respawn-btn');
-    if (respawnBtn) {
-      respawnBtn.addEventListener('click', () => {
-        this.respawnShip();
-      });
-    }
+    // Losing the mouse in flight (Esc, alt-tab) pauses the game
+    controls.onLockChange = (locked) => {
+      if (!locked && this.flying() && !this.ui.navMap.isOpen && !this.ui.pauseOpen) this.ui.openPause('log');
+    };
+
+    document.getElementById('respawn-btn').addEventListener('click', () => this.respawnShip());
+  }
+
+  nearestHostile() {
+    let best = null, bestD = Infinity;
+    this.npcs.ships.forEach((n) => {
+      if (!n.alive || !this.npcs.isHostile(n, this.ship)) return;
+      const d = n.pos.distanceTo(this.ship.position);
+      if (d < this.ship.sensorRange && d < bestD) { bestD = d; best = n; }
+    });
+    return best;
+  }
+
+  hostilesNear(range) {
+    return this.npcs.ships.some((n) => n.guns && n.alive && this.npcs.isHostile(n, this.ship) && n.pos.distanceTo(this.ship.position) < range);
+  }
+
+  // ----- docking ---------------------------------------------------------------------------------
+
+  // Why this station won't take us right now, or null
+  dockRefusal(st) {
+    const { law } = this;
+    if (st.def.faction === 'pirate' && law.piratesHostile() && this.missions.storyStep < 5) return 'Der Aschebund lässt dich nicht an Bord. Erst muss man dir dort vertrauen.';
+    if (!st.def.blackMarket && st.def.faction !== 'pirate' && law.wanted >= 2) return `Andocken verweigert: Sie werden gesucht. Bußgelder: ${law.fines.toLocaleString('de-DE')} Cr. Ein Mittelsmann auf dem Triton-Posten kann das regeln.`;
+    if (this.npcs.ships.some((n) => n.guns && n.target === this.ship && n.mode === 'attack' && n.pos.distanceTo(this.ship.position) < 350)) return 'Andockklammern gesperrt: Feindkontakt in unmittelbarer Nähe.';
+    return null;
   }
 
   dockShip() {
-    if (!this.dockableStation) return;
-
+    const st = this.dockableStation;
+    if (!st) return;
+    const refusal = this.dockRefusal(st);
+    if (refusal) {
+      sfx.denied();
+      this.comm.say(refusal, { speaker: `Flugleitung ${displayName(st.name)}`, faction: st.def.faction === 'pirate' ? 'pirate' : 'control', urgent: true, duration: 6000 });
+      return;
+    }
     this.ship.isDocked = true;
-    this.ship.autopilotActive = false; // Turn off autopilot on dock
-    
-    // Open full shop terminal UI
-    this.ui.openSpaceport(this.dockableStation.name);
+    this.ship.dockedAt = st;
+    this.ship.autopilotActive = false;
+    this.ship.velocity.set(0, 0, 0);
+    this.home = st.def.blackMarket || st.def.faction === 'pirate' ? this.home : st.name;
+    this.combat.clear();
+    this.comm.clear();
+    this.ui.openSpaceport(st.name);
     this.ui.tutorial.onDocked();
     this.saveProgress();
-
-    // Exit Pointer lock so cursor is visible to interact with shop buttons
     document.exitPointerLock();
-    spaceAudio.playAutopilotAlert(true); // ascending beep
+    sfx.dockClamp();
   }
 
   undockShip() {
+    const st = this.ship.dockedAt;
     this.ship.isDocked = false;
-    this.saveProgress();
-
+    this.ship.dockedAt = null;
     this.ui.closeSpaceport();
-    
-    // Re-lock mouse cursor
+    if (st) {
+      // Out through the bay doors, drifting clear, at rest relative to the station's planet
+      const out = this.ship.stationOutward(st, this.solarSystem);
+      this.ship.position.copy(st.mesh.position).addScaledVector(out, stationHoldStandoff(st) + 4);
+      this.orientShip(this.ship.position.clone().add(out));
+      const planet = this.solarSystem.planets[st.planetIndex];
+      this.ship.velocity.copy(planet.velocity || ZERO).addScaledVector(out, 8);
+      this.ship.throttle = 0;
+      this.ship.targetObject = null;
+    }
+    this.saveProgress();
     controls.requestLock();
-    spaceAudio.playAutopilotAlert(false); // descending warning beep
+    sfx.dockClamp();
   }
 
-  // One key for travel: a warp jump to the target shown under the crosshair, stopping at a safe distance.
-  // Held at a station, it lets go instead; right beside a station, it takes up the hold again for docking.
-  // In the nav computer, it flies to the selected destination.
+  // ----- travel ----------------------------------------------------------------------------------
+
+  // One key for travel: a warp jump to the target, stopping at a safe distance.
+  // Held at a station it lets go instead; right beside a station it takes up the hold again for docking.
   flyToTarget() {
-    if (!this.simRunning || this.ship.isDocked || this.ship.isDestroyed) return;
+    if (!this.flying()) return;
     if (this.ui.navMap.isOpen) this.ui.navMap.warp();
     else if (this.ship.autopilotActive || this.isBesideTargetStation()) this.ship.toggleAutopilot();
     else this.triggerWarpJump();
@@ -310,9 +452,7 @@ class Game {
     return !!target && target.kind === 'station' && target.mesh.position.distanceTo(this.ship.position) < arrivalRadius(target);
   }
 
-  // Aiming at an object makes it the target, but only when the pilot turns the nose to it: objects drifting
-  // through a still crosshair never steal the target, a target still in sight keeps it, and T's pick holds
-  // until the pilot looks elsewhere. From afar a planet wins over its own stations and freighters.
+  // Aiming at an object makes it the target, but only when the pilot turns the nose to it
   updateAimedTarget() {
     const ship = this.ship;
     if (ship.isDocked || ship.isWarping || ship.isDestroyed || ship.autopilotActive || this.ui.navMap.isOpen) return;
@@ -320,19 +460,22 @@ class Game {
     if (!this.aimReference) this.aimReference = forward.clone();
     if (forward.angleTo(this.aimReference) < AIM_TURN) return;
 
-    let aimed = this.solarSystem.findTargetUnderCrosshair(ship);
-    const parent = aimed && aimed.planetIndex !== undefined ? this.solarSystem.planets[aimed.planetIndex] : null;
-    if (parent && this.isInSight(parent, forward) && parent.group.position.distanceTo(ship.position) > parent.radius * PLANET_PREFERENCE_RADII) {
+    let aimed = this.solarSystem.findTargetUnderCrosshair(ship, this.npcs.ships);
+    const parent = aimed && aimed.kind === 'station' ? this.solarSystem.planets[aimed.planetIndex] : null;
+    if (parent && aimed.planetIndex !== 0 && this.isInSight(parent, forward) && parent.group.position.distanceTo(ship.position) > parent.radius * PLANET_PREFERENCE_RADII) {
       aimed = parent;
     }
     if (!aimed || aimed === ship.targetObject) return;
+    // In a fight, a ship target is not stolen by the scenery behind it
+    if (ship.targetObject && ship.targetObject.kind === 'npc' && ship.targetObject.alive && aimed.kind !== 'npc') return;
     if (ship.targetObject && this.isInSight(ship.targetObject, forward)) return;
     this.setTarget(aimed);
   }
 
-  // A deliberate target choice (aiming, T, R): later auto-aiming waits until the nose turns away from here
   setTarget(target) {
     this.ship.targetObject = target;
+    this.ship.lockProgress = 0;
+    this.ship.locked = false;
     this.aimReference = new THREE.Vector3(0, 0, -1).applyQuaternion(this.ship.quaternion);
   }
 
@@ -341,232 +484,281 @@ class Game {
     return forward.angleTo(pos.clone().sub(this.ship.position)) < AIM_CONE;
   }
 
-  triggerWarpJump() {
-    if (this.warpState) return; // Prevent double trigger during warp sequence
+  warpCost(dist) {
+    const d = difficultyOf(this);
+    if (d.freeWarp) return 0;
+    return Math.ceil((1.5 + dist / 1600) * (d.warpCostMult || 1));
+  }
 
-    const target = this.ship.targetObject;
-    const targetPos = target && (target.group ? target.group.position : target.mesh.position);
-    if (!target || targetPos.distanceTo(this.ship.position) < arrivalRadius(target)) {
-      spaceAudio.playAutopilotAlert(false); // nothing to fly to, or already there
+  // A fresh career from the pause menu: everything back to the start, at the chosen difficulty
+  newGame(difficulty) {
+    const ship = this.ship;
+    this.surface.abort();
+    if (ship.isDocked) {
+      ship.isDocked = false;
+      ship.dockedAt = null;
+      this.ui.closeSpaceport();
+    }
+    ship.isDestroyed = false;
+    ship.isWarping = false;
+    ship.autopilotActive = false;
+    ship.targetObject = null;
+    ship.throttle = 0;
+    this.warpState = null;
+    spaceAudio.setWarp(false);
+    spaceAudio.setThrottle(0);
+    document.getElementById('game-over-screen').classList.add('hidden');
+    this.combat.clear();
+    this.comm.clear();
+    this.loots.forEach((loot) => this.scene.remove(loot.group));
+    this.loots = [];
+    this.startNewCareer(difficulty);
+    this.placeShipAtHome();
+    ship.cameraMode = 'cockpit';
+    ship.mesh.visible = true;
+    this.ui.navMap.close(false);
+    this.navRefresh();
+    this.ui.updateHUDStats();
+    this.ui.tutorial.start(false);
+    this.hud.toast(`Neues Spiel · ${DIFFICULTIES[this.difficulty].label}`, 'info');
+  }
+
+  triggerWarpJump() {
+    if (this.warpState) return;
+    const ship = this.ship;
+    if (this.surface.active) {
+      sfx.denied();
+      this.hud.toast('Kein Sprung in der Atmosphäre: erst in den Orbit steigen', 'bad');
       return;
     }
+    const target = ship.targetObject;
+    const targetPos = target && (target.group ? target.group.position : target.mesh.position);
+    if (!target || targetPos.distanceTo(ship.position) < arrivalRadius(target)) {
+      sfx.denied();
+      return;
+    }
+    if (ship.systems.warp < 0.25) {
+      sfx.denied();
+      this.hud.toast('Sprungantrieb ausgefallen: Reparatur in einer Werft nötig', 'bad');
+      return;
+    }
+    if (this.encounters.massLocked()) {
+      sfx.denied();
+      this.hud.toast('MASSENSPERRE: Bewaffnete Schiffe stören das Sprungfeld', 'bad');
+      return;
+    }
+    const dist = targetPos.distanceTo(ship.position);
+    const cost = this.warpCost(dist);
+    if (ship.fuel < cost && !this.burnIce(cost)) {
+      this.offerTow();
+      return;
+    }
+    ship.fuel -= cost;
 
-    // Set state machine variables
     this.warpState = 'charging';
     this.warpTimer = 0;
     this.warpTarget = target;
-    this.warpExitSpeed = 0; // Initialize warp exit speed
-    this.ship.isWarping = true;
-    this.ship.autopilotActive = false; // Turn off autopilot
-
-    // Start warp hum sound
+    this.warpExitSpeed = 0;
+    this.warpChargeTime = 1.2 / Math.max(0.4, ship.systems.warp);
+    this.warpInterdicted = this.encounters.rollInterdiction(ship.position.clone(), targetPos.clone(), dist);
+    this.warpStart = ship.position.clone();
+    ship.isWarping = true;
+    ship.autopilotActive = false;
     spaceAudio.setWarp(true);
-
-    // Prepare visual flash overlay (bypass CSS transitions for exact JS control)
     const flashDiv = document.getElementById('warp-flash');
-    if (flashDiv) {
-      flashDiv.style.transition = 'none';
-      flashDiv.style.opacity = '0';
-    }
+    flashDiv.style.transition = 'none';
+    flashDiv.style.opacity = '0';
+  }
+
+  // Ice in the hold is reaction mass in a pinch
+  burnIce(cost) {
+    const ship = this.ship;
+    const need = Math.ceil((cost - ship.fuel) / ICE_FUEL);
+    if (ship.cargo.ice < need) return false;
+    ship.cargo.ice -= need;
+    ship.fuel += need * ICE_FUEL;
+    this.hud.toast(`${need} t Eis als Reaktionsmasse verdampft`, 'warn');
+    return true;
+  }
+
+  offerTow() {
+    sfx.denied();
+    const price = Math.min(this.ship.credits, TOW_PRICE);
+    this.comm.ask(`Kein Treibstoff für den Sprung. Der Abschleppdienst bringt Sie für ${price.toLocaleString('de-DE')} Cr zur nächsten Station.`, [
+      { label: 'Abschleppen lassen', run: () => this.tow(price) },
+      { label: 'Nein danke', run: () => {} },
+    ], { speaker: 'Pannendienst Sol', faction: 'civil', seed: 77, timeout: 15000 });
+  }
+
+  tow(price) {
+    const st = this.solarSystem.nearestStation(this.ship.position, (s) => !s.hidden && !s.def.faction);
+    this.ship.credits -= price;
+    this.ship.fuel = Math.max(this.ship.fuel, 10);
+    this.npcs.clearAll();
+    this.combat.clear();
+    this.placeShipAtStation(st);
+    this.fx.warpFlash(this.ship.position, null);
+    this.hud.toast(`Abgeschleppt zu ${displayName(st.name)}`, 'info');
   }
 
   updateWarpJump(delta) {
     if (!this.warpState || !this.warpTarget) return;
-
     this.warpTimer += delta;
     const target = this.warpTarget;
     const flashDiv = document.getElementById('warp-flash');
 
     if (this.warpState === 'charging') {
       const targetPos = (target.group ? target.group.position : target.mesh.position).clone();
-      const shipPos = this.ship.position;
-
-      // 1. Rotate ship to face target
-      const dir = targetPos.clone().sub(shipPos).normalize();
-      const shipForward = new THREE.Vector3(0, 0, -1);
-      const qRotate = new THREE.Quaternion().setFromUnitVectors(shipForward, dir);
+      const dir = targetPos.clone().sub(this.ship.position).normalize();
+      const qRotate = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, -1), dir);
       this.ship.quaternion.slerp(qRotate, delta * 3.5);
       this.ship.mesh.quaternion.copy(this.ship.quaternion);
-
-      // 2. visually flare engine glows
       this.ship.throttle = 1.0;
-
-      // 3. Stretch camera FOV
-      const t = Math.min(1.0, this.warpTimer / 1.2);
-      this.camera.fov = 65 + t * 40; // 65 to 105
+      const t = Math.min(1.0, this.warpTimer / this.warpChargeTime);
+      this.camera.fov = 65 + t * 40;
       this.camera.updateProjectionMatrix();
-
-      // 4. Increase flash opacity
-      if (flashDiv) {
-        flashDiv.style.opacity = (t * 0.4).toString();
+      flashDiv.style.opacity = (t * 0.4).toString();
+      // Getting shot at disturbs the charge: a hostile closing in aborts it
+      if (this.encounters.massLocked()) {
+        this.abortWarp('MASSENSPERRE: Sprung abgebrochen');
+        return;
       }
-
-      // Transition
-      if (this.warpTimer >= 1.2) {
+      if (this.warpTimer >= this.warpChargeTime) {
         this.warpState = 'hyper';
         this.warpTimer = 0;
-        spaceAudio.playWarpJump(); // Play explosive warp fire & sweep sound
+        spaceAudio.playWarpJump();
       }
-    } 
-    else if (this.warpState === 'hyper') {
+    } else if (this.warpState === 'hyper') {
       const targetPos = (target.group ? target.group.position : target.mesh.position).clone();
       const shipPos = this.ship.position;
 
-      // 1. Move ship extremely fast towards target, but on short hops never into or past it, and never
-      //    through a planet or the Sun (e.g. a station behind its planet): then it waits behind the flash
+      // Move extremely fast towards the target, but never into or through a body
       const dir = targetPos.clone().sub(shipPos).normalize();
       const gap = targetPos.distanceTo(shipPos) - arrivalRadius(target);
       const speed = Math.min(2200, Math.max(0, gap) * 4);
       const travel = dir.clone().multiplyScalar(speed * delta);
-      const blocked = this.solarSystem.planets.some(
-        (p) => distanceToSegment(p.group.position, shipPos, travel) < atmosphereTop(p) + WARP_CLEARANCE
-      );
+      const blocked = this.solarSystem.planets.some((p) => distanceToSegment(p.group.position, shipPos, travel) < atmosphereTop(p) + WARP_CLEARANCE);
       this.ship.velocity.copy(dir).multiplyScalar(blocked ? 0 : speed);
-
-      // 2. visually flare engine glows
       this.ship.throttle = 1.0;
-
-      // 3. Stretch camera FOV to max
       const t = Math.min(1.0, this.warpTimer / 0.5);
-      this.camera.fov = 105 + t * 20; // 105 to 125
+      this.camera.fov = 105 + t * 20;
       this.camera.updateProjectionMatrix();
+      flashDiv.style.opacity = (0.4 + t * 0.6).toString();
 
-      // 4. Full screen whiteout flash
-      if (flashDiv) {
-        flashDiv.style.opacity = (0.4 + t * 0.6).toString();
-      }
-
-      // Transition & Teleport
       if (this.warpTimer >= 0.5) {
-        // Calculate offset and exit speed dynamically based on target type
-        const targetRadius = target.mesh ? target.mesh.scale.x : 1.0;
         let offsetDist = 0;
         let exitSpeed = 0;
+        let exitPos = null;
 
-        if (target.kind === 'station') {
-          // Station: exit on the far side from its planet (never inside it), just outside docking range, at rest
+        if (this.warpInterdicted) {
+          // Dragged out halfway, still moving
+          exitPos = this.solarSystem.pushClear(this.warpStart.clone().lerp(targetPos, 0.35 + Math.random() * 0.3).add(new THREE.Vector3(0, 30, 0)), 80);
+          dir.copy(targetPos).sub(exitPos).normalize();
+          exitSpeed = this.ship.maxSpeed * 1.2;
+        } else if (target.kind === 'station') {
+          // Station: exit on the far side from its planet, outside docking range, at rest
           exitSpeed = 0;
           dir.copy(this.ship.stationOutward(target, this.solarSystem)).negate();
-          offsetDist = WARP_STATION_STANDOFF;
-        } else if (target.name && target.name.startsWith('ASTEROID')) {
-          // Asteroid: teleport close to mining distance with zero exit velocity
-          offsetDist = 5.0;
+          offsetDist = stationHoldStandoff(target);
+        } else if (target.kind === 'asteroid') {
+          offsetDist = target.size + 12;
           exitSpeed = 0;
         } else if (this.solarSystem.planets.includes(target)) {
-          // Planet / Sun: brake in alongside it (it keeps orbiting) and stop at a safe distance, at rest
-          // relative to the planet; the approach side is moved if another body is in the way
+          // Planet / Sun: brake in alongside it and stop at a safe distance, at rest relative to the planet
           exitSpeed = this.ship.maxSpeed * 1.8;
           this.warpHoldDist = planetHoldDistance(target);
-          this.warpBrakeDist = (exitSpeed * WARP_BRAKE_TIME) / 2; // linear deceleration to zero
+          this.warpBrakeDist = (exitSpeed * WARP_BRAKE_TIME) / 2;
           dir.copy(this.clearWarpApproach(target, dir, this.warpHoldDist + this.warpBrakeDist));
           offsetDist = this.warpHoldDist + this.warpBrakeDist;
         } else {
-          // Freighters: teleport with safety buffer for the deceleration flight phase
-          const exitSpeedVal = this.ship.maxSpeed * 1.8;
-          const targetSpeedVal = 0.0; // Decelerate to a complete stop
-          const averageSpeed = (exitSpeedVal + targetSpeedVal) / 2;
-          offsetDist = targetRadius + averageSpeed + 25.0; // Stop exactly 25.0 units in front of the planet surface
-          exitSpeed = exitSpeedVal;
+          // Ships and nav points: a short glide in, stopping well short
+          exitSpeed = this.ship.maxSpeed * 1.2;
+          offsetDist = (target.radius || 1) + exitSpeed * 0.5 + 60;
         }
 
         this.warpExitSpeed = exitSpeed;
         this.warpDir = dir.clone();
-
-        // Teleport
-        this.ship.position.copy(targetPos).sub(dir.clone().multiplyScalar(offsetDist));
+        if (exitPos) this.ship.position.copy(exitPos);
+        else this.ship.position.copy(targetPos).sub(dir.clone().multiplyScalar(offsetDist));
         this.ship.position.y += 0.1;
         this.ship.mesh.position.copy(this.ship.position);
-
-        // Instant rotation facing target
-        const qFinal = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, -1), dir);
-        this.ship.quaternion.copy(qFinal);
+        this.ship.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), dir);
         this.ship.mesh.quaternion.copy(this.ship.quaternion);
 
-        // Snap camera immediately to prevent chase lerp stuttering
-        const cameraOffset = new THREE.Vector3(0, 1.2 * (this.ship.cameraDistance / 6.0), this.ship.cameraDistance);
-        cameraOffset.applyQuaternion(this.ship.quaternion);
+        const cameraOffset = new THREE.Vector3(0, 1.2 * (this.ship.cameraDistance / 6.0), this.ship.cameraDistance).applyQuaternion(this.ship.quaternion);
         this.camera.position.copy(this.ship.position).add(cameraOffset);
-        
-        const targetForward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.ship.quaternion);
-        const lookTarget = this.ship.position.clone().add(targetForward.multiplyScalar(10));
-        this.camera.lookAt(lookTarget);
-        
-        const targetUp = new THREE.Vector3(0, 1, 0).applyQuaternion(this.ship.quaternion);
-        this.camera.up.copy(targetUp);
+        this.camera.lookAt(this.ship.position.clone().add(new THREE.Vector3(0, 0, -1).applyQuaternion(this.ship.quaternion).multiplyScalar(10)));
+        this.camera.up.copy(new THREE.Vector3(0, 1, 0).applyQuaternion(this.ship.quaternion));
 
-        // Set exit state
+        // Ships left behind stay behind
+        this.npcs.ships.filter((n) => !n.mission && n.pos.distanceTo(this.ship.position) > 6000).forEach((n) => this.npcs.remove(n));
         this.warpState = 'decelerating';
         this.warpTimer = 0;
-        spaceAudio.setWarp(false); // Play spin down drone sound
-        
-        // Start exit velocity pointing at target
+        spaceAudio.setWarp(false);
         this.ship.velocity.copy(dir).multiplyScalar(exitSpeed);
-        this.ship.throttle = 0.0; // Throttle to zero
+        this.ship.throttle = 0.0;
       }
-    } 
-    else if (this.warpState === 'decelerating') {
+    } else if (this.warpState === 'decelerating') {
       const targetPos = (target.group ? target.group.position : target.mesh.position).clone();
       const shipPos = this.ship.position;
-
       const t = Math.min(1.0, this.warpTimer / WARP_BRAKE_TIME);
-      const isPlanet = this.solarSystem.planets.includes(target);
+      const isPlanet = this.solarSystem.planets.includes(target) && !this.warpInterdicted;
 
-      // Ride along with the orbiting station while the jump spins down
-      if (target.kind === 'station') {
-        shipPos.copy(this.ship.stationDockPoint(target, WARP_STATION_STANDOFF, this.solarSystem));
-      }
-
-      if (isPlanet) {
-        // Brake relative to the moving planet: the remaining gap shrinks like a linear stop, measured
-        // from where the planet is now, so the ship ends exactly at its parking point beside it
+      if (this.warpInterdicted) {
+        this.ship.velocity.copy(this.warpDir).multiplyScalar(this.warpExitSpeed * (1 - t * 0.7));
+      } else if (target.kind === 'station') {
+        shipPos.copy(this.ship.stationDockPoint(target, stationHoldStandoff(target), this.solarSystem));
+      } else if (isPlanet) {
         const remaining = this.warpBrakeDist * (1.0 - t) * (1.0 - t);
         shipPos.copy(targetPos).sub(this.warpDir.clone().multiplyScalar(this.warpHoldDist + remaining));
-        this.ship.velocity.set(0, 0, 0); // position is set directly; no extra drift from the physics step
+        this.ship.velocity.set(0, 0, 0);
       } else {
-        // 1. Decelerate ship from warp speed down to a complete stop
-        const currentSpeed = this.warpExitSpeed * (1.0 - t);
         const dir = targetPos.clone().sub(shipPos).normalize();
-        this.ship.velocity.copy(dir).multiplyScalar(currentSpeed);
+        this.ship.velocity.copy(dir).multiplyScalar(this.warpExitSpeed * (1.0 - t));
       }
 
-      // 2. Contract camera FOV
-      this.camera.fov = 125 - t * 60; // 125 to 65
+      this.camera.fov = 125 - t * 60;
       this.camera.updateProjectionMatrix();
+      flashDiv.style.opacity = (1.0 - t).toString();
 
-      // 3. Fade out flash
-      if (flashDiv) {
-        flashDiv.style.opacity = (1.0 - t).toString();
-      }
-
-      // Complete
       if (this.warpTimer >= WARP_BRAKE_TIME) {
         this.warpState = null;
         this.ship.isWarping = false;
         this.camera.fov = 65;
         this.camera.updateProjectionMatrix();
-        if (flashDiv) {
-          flashDiv.style.opacity = '0';
-        }
-        this.ship.velocity.set(0, 0, 0); // Complete stop
+        flashDiv.style.opacity = '0';
         this.ship.throttle = 0.0;
+        const frame = this.solarSystem.frameBodyAt(shipPos);
+        this.ship.velocity.copy(frame ? frame.velocity : ZERO);
 
-        // Stations keep orbiting: the autopilot holds the waiting point, the pilot glides in to dock
+        if (this.warpInterdicted) {
+          this.warpInterdicted = false;
+          this.ship.velocity.addScaledVector(this.warpDir, this.ship.maxSpeed * 0.4);
+          this.encounters.sprungInterdiction();
+          return;
+        }
         if (target.kind === 'station') {
           this.ship.autopilotActive = true;
-          if (!this.ui.tutorial.active) {
-            this.ui.tutorial.say('Du hältst vor der Station. W gleitet heran, G dockt an. Mit X, S oder der Maus fliegst du wieder weg.', 8000);
-          }
+          if (!this.ui.tutorial.active) this.ui.tutorial.say('Du hältst vor der Station. W gleitet heran, G dockt an. Mit X, S oder der Maus fliegst du wieder weg.', 8000);
         }
-
-        // Planets: hand the stick back at rest relative to the planet, which keeps orbiting; nothing holds the ship
         if (isPlanet) {
           if (target.velocity) this.ship.velocity.copy(target.velocity);
-          if (!this.ui.tutorial.active) {
-            this.ui.tutorial.say(`${displayName(target.name)} erreicht. Du hast die Steuerung.`, 5000);
-          }
+          if (!this.ui.tutorial.active) this.ui.tutorial.say(`${displayName(target.name)} erreicht. Du hast die Steuerung.`, 5000);
         }
       }
     }
+  }
+
+  abortWarp(message) {
+    this.warpState = null;
+    this.ship.isWarping = false;
+    this.camera.fov = 65;
+    this.camera.updateProjectionMatrix();
+    document.getElementById('warp-flash').style.opacity = '0';
+    spaceAudio.setWarp(false);
+    this.ship.throttle = 0;
+    this.hud.toast(message, 'bad');
+    sfx.denied();
   }
 
   // Direction from which the jump approaches `target`: the requested one if the stretch from the exit point
@@ -584,10 +776,8 @@ class Game {
       }
       return true;
     };
-
     if (isClear(dir)) return dir;
     const up = new THREE.Vector3(0, 1, 0);
-    // Turn in growing steps, alternating sides, until the approach is free (the full circle is always tried)
     for (let step = 1; step <= 12; step++) {
       for (const side of [1, -1]) {
         const candidate = dir.clone().applyAxisAngle(up, side * step * THREE.MathUtils.degToRad(15));
@@ -598,29 +788,24 @@ class Game {
   }
 
   startSimulation() {
-    // Earth kept orbiting behind the start screen: re-place the ship now, or Earth may have swept into it
-    this.placeShipAtEarth();
-    // The preselected station stays the target until the pilot turns the nose somewhere else
+    // The world kept turning behind the start screen: re-place the ship now
+    this.placeShipAtHome();
     this.aimReference = new THREE.Vector3(0, 0, -1).applyQuaternion(this.ship.quaternion);
     this.simRunning = true;
-    const canvas = document.getElementById('space-canvas');
-    controls.start(canvas);
-  }
-
-  toggleScaleMode() {
-    if (!this.simRunning || this.ship.isDocked) return;
-    spaceAudio.playAutopilotAlert(false); // Locked to Arcade mode
+    controls.start(document.getElementById('space-canvas'));
+    music.start();
   }
 
   toggleFlightAssist() {
-    if (!this.simRunning || this.ship.isDocked) return;
+    if (!this.flying()) return;
     this.ship.flightAssist = !this.ship.flightAssist;
     spaceAudio.playBeep();
   }
 
   toggleAudio() {
-    const isMuted = !spaceAudio.muted;
-    spaceAudio.setMute(isMuted);
+    spaceAudio.setMute(!spaceAudio.muted);
+    this.settings.sound = !spaceAudio.muted;
+    saveSettings(this.settings);
   }
 
   onWindowResize() {
@@ -630,52 +815,73 @@ class Game {
     this.composer.setSize(window.innerWidth, window.innerHeight);
   }
 
+  // ----- the frame -------------------------------------------------------------------------------
+
   tick() {
     requestAnimationFrame(this.tick.bind(this));
+    let delta = Math.min(this.clock.getDelta(), 0.1);
+    if (this.paused) delta = 0;
 
-    const delta = this.clock.getDelta();
-    
-    // 1. Slowly rotate orbits
     this.solarSystem.update(delta, this.ship ? this.ship.position : null);
 
-    if (this.simRunning) {
-      // 1.5. Update warp sequence if active
-      if (this.warpState) {
-        this.updateWarpJump(delta);
+    if (this.simRunning && delta > 0) {
+      const low = this.surface.active;
+      if (this.warpState) this.updateWarpJump(delta);
+      if (!low) this.updateAimedTarget();
+      if (low) {
+        // Atmospheric flight: the ship flies and is filmed in local terms, then goes back to its point in space
+        this.surface.beforeShip();
+        this.ship.update(delta, null);
+        this.surface.update(delta);
+        this.ship.updateCamera(this.camera, delta);
+        this.surface.afterShip();
+        if (this.surface.wantExit) {
+          this.surface.exit();
+          this.ship.updateCamera(this.camera, 1);
+        }
+      } else {
+        this.ship.update(delta, this.solarSystem);
+        this.ship.updateCamera(this.camera, delta);
+      }
+      if (!this.warpState) {
+        const wantFov = 65 + (this.ship.boosting ? 7 : 0);
+        if (Math.abs(this.camera.fov - wantFov) > 0.05) {
+          this.camera.fov += (wantFov - this.camera.fov) * Math.min(1, delta * 4);
+          this.camera.updateProjectionMatrix();
+        }
       }
 
-      // 1.6. Whatever the pilot aims at becomes the target
-      this.updateAimedTarget();
-
-      // 2. Update ship physics (slingshots calculations internally)
-      this.ship.update(delta, this.solarSystem);
-      this.ship.updateCamera(this.camera, delta);
-      
-      // 3. Collision checks: Lasers hitting Asteroids & Ship crashes
       if (this.ship.atmosphereContact > 0) this.ship.atmosphereContact -= delta;
-      if (!this.ship.isDocked) {
-        this.checkCollisions();
+      if (!this.surface.active) {
+        this.npcs.update(delta);
+        this.combat.update(delta);
+        if (!this.ship.isDocked) this.checkCollisions();
+        this.encounters.update(delta);
+        this.surface.updateApproach(delta);
       }
-
-      // 4. Update dynamic UI indicators
+      this.missions.update(delta);
+      this.law.update(delta);
+      this.storm.update(delta);
+      this.economy.update(delta);
+      if (this.surface.active) {
+        this.fx.update(delta, this.camera, { velocity: this.surface.local.vel, frameVelocity: ZERO, isWarping: false });
+      } else {
+        this.fx.update(delta, this.camera, this.ship);
+        this.updateLootCrates(delta);
+      }
+      this.comm.update();
       this.ui.update(this.ship, this.solarSystem, this.camera);
-      
-      // 5. Update explosions particles pool
-      this.updateExplosions(delta);
-      
-      // 5.5. Update loot crates pool & check distance collection
-      this.updateLootCrates(delta);
-
-      // 5.6. Guided first flight & periodic autosave
+      this.hud.update(delta);
       this.ui.tutorial.update(this.ship, this.dockableStation);
+      music.update(delta, this.dangerLevel());
+
       this.autosaveTimer += delta;
       if (this.autosaveTimer >= AUTOSAVE_INTERVAL && !this.ship.isDestroyed) {
         this.autosaveTimer = 0;
         this.saveProgress();
       }
-
       controls.clearDeltas();
-    } else {
+    } else if (!this.simRunning) {
       // Behind the start screen: a slow pass over Earth, swinging between the day side and the terminator
       const earth = this.solarSystem.planets[3];
       const up = new THREE.Vector3(0, 1, 0);
@@ -685,708 +891,379 @@ class Game {
       this.camera.position.copy(earth.group.position).addScaledVector(dir, earth.radius * 2.3).addScaledVector(up, earth.radius * 0.45);
       const side = new THREE.Vector3().crossVectors(up, dir).normalize();
       this.camera.lookAt(earth.group.position.clone().addScaledVector(side, earth.radius * 0.55));
+    } else {
+      controls.clearDeltas();
     }
 
-    // 6. WebGL frame render (bloom + ACES tone mapping); planet shaders get the final camera first
-    this.solarSystem.updateView(this.camera);
-    this.composer.render(delta);
+    if (this.surface.active) this.surface.prepareRender(this.camera, delta);
+    else this.solarSystem.updateView(this.camera);
+    this.eyes.update(delta);
+    // Inside a station the painted interior covers the screen: no need to render space behind it
+    if (!(this.ship.isDocked && this.ui.stationUI.isOpen)) this.composer.render(delta);
+    if (this.simRunning && !this.surface.active) this.missileCam.render(delta);
+  }
+
+  // 0 calm, ~0.4 hostiles around, 1 in a fight
+  dangerLevel() {
+    const ship = this.ship;
+    if (ship.isDocked || ship.isDestroyed) return 0;
+    let level = 0;
+    for (const n of this.npcs.ships) {
+      if (!n.guns || !this.npcs.isHostile(n, ship)) continue;
+      const d = n.pos.distanceTo(ship.position);
+      if (d < 700 && n.mode === 'attack') return 1;
+      if (d < 2200) level = Math.max(level, 0.45);
+    }
+    if (ship.incomingMissiles > 0 || performance.now() - ship.lastHullHit < 4000) return 1;
+    return level;
+  }
+
+  // ----- collisions ------------------------------------------------------------------------------
+
+  // Two things bumped: push apart, bounce, and hurt in proportion to the closing speed
+  bump(normal, otherVel, otherSize) {
+    const ship = this.ship;
+    const rel = ship.velocity.clone().sub(otherVel);
+    const closing = -rel.dot(normal);
+    if (closing <= 0) return 0;
+    rel.addScaledVector(normal, closing * 1.6);
+    ship.velocity.copy(rel).add(otherVel);
+    ship.rotationSpeed.roll += (Math.random() - 0.5) * 3;
+    ship.shake = Math.max(ship.shake, Math.min(1, closing / 30));
+    if (closing > RAM_SPEED) {
+      const damage = (closing - RAM_SPEED) * 1.4 * Math.min(1, otherSize / 2);
+      ship.applyHit(damage, ship.position.clone().addScaledVector(normal, -ship.radius), null, null, 'ram');
+      sfx.crash();
+    } else {
+      sfx.hitConfirm(false);
+    }
+    return closing;
   }
 
   checkCollisions() {
     const ship = this.ship;
     const solarSystem = this.solarSystem;
+    if (ship.isWarping || ship.isDestroyed) return;
 
-    // A. Check active laser bolts hitting asteroids or freighters
-    for (let l = ship.laserBolts.length - 1; l >= 0; l--) {
-      const bolt = ship.laserBolts[l];
-      let boltConsumed = false;
-
-      // 1. Check freighters first
-      for (let s = 0; s < solarSystem.tradeShips.length; s++) {
-        const ts = solarSystem.tradeShips[s];
-        const dist = bolt.mesh.position.distanceTo(ts.mesh.position);
-        
-        if (dist < 1.6) {
-          ship.laserGroup.remove(bolt.mesh);
-          ship.laserBolts.splice(l, 1);
-          boltConsumed = true;
-
-          ts.shield -= 25;
-          if (ts.shield <= 0) {
-            this.spawnExplosion(ts.mesh.position, 0xffaa00);
-            spaceAudio.playShipExplosion();
-            this.spawnLootCargo(ts.mesh.position);
-
-            // AI freighter respawn logic: reset shield & teleport to random orbit angle
-            ts.shield = 100;
-            ts.localAngle = Math.random() * Math.PI * 2;
-          } else {
-            this.spawnExplosion(bolt.mesh.position, 0x00f0ff);
-            spaceAudio.playBeep();
-          }
+    if (!ship.autopilotActive) {
+      for (const ast of this.combat.nearRocks) {
+        const offset = ship.position.clone().sub(ast.mesh.position);
+        const dist = offset.length();
+        const reach = ast.size + ship.radius;
+        if (dist < reach) {
+          const n = offset.divideScalar(dist || 1);
+          ship.position.copy(ast.mesh.position).addScaledVector(n, reach);
+          this.bump(n, ZERO, ast.size);
+          this.fx.rockHit(ship.position.clone().addScaledVector(n, -ship.radius), n);
           break;
         }
       }
-
-      if (boltConsumed) continue;
-
-      // 2. Check asteroids
-      for (let a = solarSystem.asteroids.length - 1; a >= 0; a--) {
-        const ast = solarSystem.asteroids[a];
-        const dist = bolt.mesh.position.distanceTo(ast.mesh.position);
-        
-        // Laser hits asteroid!
-        if (dist < ast.size + 0.4) {
-          // Remove asteroid from scene
-          solarSystem.asteroidGroup.remove(ast.mesh);
-          ast.mesh.geometry.dispose();
-          ast.mesh.material.dispose();
-          solarSystem.asteroids.splice(a, 1);
-
-          // Remove laser bolt
-          ship.laserGroup.remove(bolt.mesh);
-          ship.laserBolts.splice(l, 1);
-          boltConsumed = true;
-
-          // Spawn particle explosion: Orange/Yellow fireballs
-          this.spawnExplosion(ast.mesh.position, 0xff7700);
-          
-          // Play impact sound (quick double beep)
-          spaceAudio.playBeep();
-
-          // Yield cargo items (60% Ore, 40% Ice)
-          const isOre = Math.random() < 0.6;
-          const currentWeight = ship.getCurrentCargoWeight();
-
-          if (currentWeight < ship.maxCargo) {
-            if (isOre) {
-              ship.cargo.ore++;
-            } else {
-              ship.cargo.ice++;
-            }
-            // Trigger HUD stats updates
-            this.ui.updateHUDStats();
-          }
-
-          break; // break inner loop
-        }
-      }
-      if (boltConsumed) continue;
-    }
-
-    // B. Check spaceship crashing into asteroids
-    // Only crash if not in autopilot (safety sensors on autopilot)
-    if (!ship.autopilotActive) {
-      for (let a = 0; a < solarSystem.asteroids.length; a++) {
-        const ast = solarSystem.asteroids[a];
-        const dist = ship.position.distanceTo(ast.mesh.position);
-
-        // Crash collision occurred!
-        if (dist < ast.size + 0.8) {
-          // Drain ship shields
-          ship.shield = Math.max(0, ship.shield - 20); // Drains 20%
-          
-          // Sound buzzer alert warning
-          spaceAudio.playAutopilotAlert(false);
-
-          // Calculate bounce back vector
-          const bounceDir = ship.position.clone().sub(ast.mesh.position).normalize();
-          
-          // Reflect velocity vector away from rock
-          ship.velocity.copy(bounceDir.multiplyScalar(ship.maxSpeed * 0.6));
-          
-          // Spawn sparks particles explosion
-          this.spawnExplosion(ship.position, 0x00f0ff);
-          
-          // Damage cockpit shake effect (implemented in updateCamera camera shake)
-          ship.rotationSpeed.roll += (Math.random() - 0.5) * 4.0;
-          ship.rotationSpeed.pitch += (Math.random() - 0.5) * 2.0;
-
-          break; // only crash one asteroid per frame
-        }
-      }
-    }
-
-    // C. Planets: the ship flies down into the upper atmosphere (over airless ground, down to a low pass)
-    //    and no deeper; it slides along that floor. Only the Sun destroys it.
-    if (!ship.isWarping && !ship.isDestroyed) {
-      for (let i = 0; i < solarSystem.planets.length; i++) {
-        const p = solarSystem.planets[i];
-        const offset = ship.position.clone().sub(p.group.position);
+      for (const st of this.combat.nearStations) {
+        const offset = ship.position.clone().sub(st.mesh.position);
         const dist = offset.length();
-
-        if (p.name === 'Sun') {
-          if (dist < p.radius * 1.02 + 0.45) {
-            this.triggerShipExplosion(p.name);
-            break;
-          }
-          continue;
+        const reach = st.size * 0.82 + ship.radius;
+        if (dist < reach) {
+          const n = offset.divideScalar(dist || 1);
+          ship.position.copy(st.mesh.position).addScaledVector(n, reach);
+          const planet = solarSystem.planets[st.planetIndex];
+          this.bump(n, planet.velocity || ZERO, 20);
         }
+      }
+    }
 
-        const floor = flightFloor(p);
-        if (dist >= floor) continue;
-        const up = offset.divideScalar(dist || 1);
-        ship.position.copy(p.group.position).addScaledVector(up, floor);
-        ship.mesh.position.copy(ship.position);
+    for (const npc of this.npcs.ships) {
+      const offset = ship.position.clone().sub(npc.pos);
+      const dist = offset.length();
+      const reach = npc.radius * 0.8 + ship.radius;
+      if (dist < reach) {
+        const n = offset.divideScalar(dist || 1);
+        ship.position.copy(npc.pos).addScaledVector(n, reach);
+        const closing = this.bump(n, npc.vel, npc.radius);
+        if (closing > RAM_SPEED) npc.applyHit((closing - RAM_SPEED) * 1.2, npc.pos.clone().addScaledVector(n, npc.radius), ship);
+      }
+    }
 
-        // Cancel the descent relative to the planet, keep the sideways motion, bounce off gently
-        const planetVelocity = p.velocity || ZERO;
-        const rel = ship.velocity.clone().sub(planetVelocity);
-        const sink = -rel.dot(up);
-        if (sink > 0) {
-          if (ship.atmosphereContact <= 0) {
-            spaceAudio.playAutopilotAlert(false);
-            if (sink > HEAT_SPEED) {
-              ship.shield = Math.max(0, ship.shield - (sink - HEAT_SPEED) * 0.5);
-              ship.rotationSpeed.pitch += (Math.random() - 0.5) * 0.6;
-            }
-          }
-          rel.addScaledVector(up, sink * 1.25);
-          ship.velocity.copy(rel).add(planetVelocity);
+    // Planets: the ship flies down into the upper atmosphere and no deeper; only the Sun destroys it
+    for (let i = 0; i < solarSystem.planets.length; i++) {
+      const p = solarSystem.planets[i];
+      const offset = ship.position.clone().sub(p.group.position);
+      const dist = offset.length();
+      if (p.name === 'Sun') {
+        if (dist < p.radius * 1.02 + 0.45) {
+          this.triggerShipExplosion(p.name);
+          break;
         }
-        ship.atmosphereContact = 0.6; // seconds the warning stays up
-        break;
+        continue;
+      }
+      // Deep enough over a planet with a ground: atmospheric flight takes over
+      const entry = surfaceEntryRadius(p);
+      if (entry && dist < entry && !ship.autopilotActive && this.surface.enter(p)) return;
+      const floor = flightFloor(p);
+      if (dist >= floor) continue;
+      const up = offset.divideScalar(dist || 1);
+      ship.position.copy(p.group.position).addScaledVector(up, floor);
+      ship.mesh.position.copy(ship.position);
+      const planetVelocity = p.velocity || ZERO;
+      const rel = ship.velocity.clone().sub(planetVelocity);
+      const sink = -rel.dot(up);
+      if (sink > 0) {
+        if (ship.atmosphereContact <= 0) {
+          spaceAudio.playAutopilotAlert(false);
+          if (sink > HEAT_SPEED) {
+            ship.shield = Math.max(0, ship.shield - (sink - HEAT_SPEED) * 0.5);
+            ship.rotationSpeed.pitch += (Math.random() - 0.5) * 0.6;
+          }
+        }
+        rel.addScaledVector(up, sink * 1.25);
+        ship.velocity.copy(rel).add(planetVelocity);
+      }
+      ship.atmosphereContact = 0.6;
+      break;
+    }
+  }
+
+  // ----- what happens when things are shot ----------------------------------------------------------
+
+  hitRock(rock, damage, point, owner) {
+    const normal = point.clone().sub(rock.mesh.position).normalize();
+    this.fx.rockHit(point, normal);
+    // Rocks only crack under sustained fire; the player's guns are what mining is for
+    rock.hp -= owner === this.ship ? damage : damage * 0.3;
+    if (rock.hp > 0) return;
+    this.fx.rockBreak(rock.mesh.position, rock.size);
+    sfx.explosionAt(rock.mesh.position, 0.35 + rock.size / 30);
+    this.solarSystem.removeAsteroid(rock);
+    this.combat.nearRocks = this.combat.nearRocks.filter((r) => r !== rock);
+    if (this.ship.targetObject === rock) this.ship.targetObject = null;
+    if (owner !== this.ship) return;
+    const chunks = THREE.MathUtils.clamp(Math.round(rock.size / 5), 1, 5);
+    for (let i = 0; i < chunks; i++) {
+      const good = rock.rockKind === 'ice' ? 'ice' : rock.rockKind === 'ore' ? 'ore' : Math.random() < 0.6 ? 'ore' : 'ice';
+      const dir = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
+      const pos = rock.mesh.position.clone().addScaledVector(dir, rock.size * 0.5);
+      this.spawnLoot(pos, good, rock.rockKind === 'rock' ? 1 : 1 + Math.floor(Math.random() * 2), 0, { velocity: dir.multiplyScalar(3 + Math.random() * 4) });
+    }
+  }
+
+  onStationHit(st, owner) {
+    if (owner !== this.ship) return;
+    st.hits = (st.hits || 0) + 1;
+    if (st.hits === 3) this.comm.say('Hier Stationssicherheit: Feuer sofort einstellen!', { speaker: `Sicherheit ${displayName(st.name)}`, faction: st.def.faction === 'pirate' ? 'pirate' : 'police', urgent: true, duration: 4000 });
+    if (st.hits >= 8) {
+      st.hits = 0;
+      if (st.def.faction === 'pirate') {
+        this.law.changeRep('pirate', -10);
+        this.npcs.ships.forEach((n) => { if (n.faction === 'pirate' && n.home.station === st) { n.aggro = true; n.attack(this.ship); } });
+      } else {
+        this.law.raise(2, 2500);
       }
     }
   }
 
-  triggerShipExplosion(planetName) {
+  onNpcKilled(npc, killer) {
+    const byPlayer = killer === this.ship;
+    if (byPlayer) {
+      this.law.reportKill(npc);
+      this.hud.toast(`Abschuss: ${npc.name}`, npc.faction === 'pirate' ? 'gain' : 'bad');
+    } else {
+      this.missions.onKill(npc);
+    }
+    // Some of what it carried survives
+    if (byPlayer || Math.random() < 0.5) {
+      npc.lootGoods().forEach((good) => {
+        if (Math.random() < 0.65) {
+          const dir = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
+          this.spawnLoot(npc.pos.clone().addScaledVector(dir, npc.radius * 0.5), good, 1 + Math.floor(Math.random() * 2), 0, { velocity: dir.multiplyScalar(4).add(npc.vel.clone().multiplyScalar(0.4)) });
+        }
+      });
+    }
+    this.comm.cancelFrom(npc);
+  }
+
+  // ----- death -----------------------------------------------------------------------------------
+
+  triggerShipExplosion(cause) {
     if (this.ship.isDestroyed) return;
-
-    this.ship.isDestroyed = true;
-    this.ship.autopilotActive = false;
-    this.ship.velocity.set(0, 0, 0);
-    this.ship.throttle = 0.0;
-    
-    // Play explosion sound
+    const ship = this.ship;
+    ship.isDestroyed = true;
+    ship.autopilotActive = false;
+    ship.velocity.set(0, 0, 0);
+    ship.throttle = 0.0;
+    if (this.warpState) this.abortWarp('');
+    sfx.explosionAt(ship.position, 2);
     spaceAudio.playShipExplosion();
-    
-    // Spawn Privateer-style visual explosion!
-    this.spawnPrivateerExplosion(this.ship.position);
+    this.fx.explosion(ship.position, 4);
+    ship.mesh.visible = false;
+    this.ship.cameraMode = 'chase';
+    this.ship.cameraDistance = 22;
 
-    // Hide ship mesh
-    this.ship.mesh.visible = false;
-
-    // Show Game Over UI screen
-    const deathScreen = document.getElementById('game-over-screen');
     const deathText = document.getElementById('death-reason-text');
-    if (deathText) {
-      const name = displayName(planetName);
-      const feminine = ['Sonne', 'Erde', 'Venus'];
-      const withArticle = feminine.includes(name) ? `der ${name}` : `dem ${name}`;
+    const planet = this.solarSystem.planets.find((p) => p.name === cause);
+    if (planet) {
+      const name = displayName(cause);
+      const withArticle = ['Sonne', 'Erde', 'Venus'].includes(name) ? `der ${name}` : `dem ${name}`;
       deathText.innerText = `Dein Schiff ist mit ${withArticle} kollidiert und explodiert.`;
+    } else if (cause === 'Sonnensturm') {
+      deathText.innerText = 'Die Strahlung des Sonnensturms hat Schilde, Hülle und Bordelektronik zerfressen.';
+    } else {
+      deathText.innerText = `Abgeschossen von ${cause}.`;
     }
-
-    // The cargo hold is lost with the ship; credits and upgrades stay on the pilot's account
-    this.ship.cargo = { ore: 0, ice: 0, tech: 0 };
+    // The hold is lost with the ship; the insurance takes its deductible; the account, upgrades and missions stay
+    const fee = Math.round(Math.min(ship.credits, 400 + ship.credits * 0.08));
+    ship.credits -= fee;
+    ship.cargo = emptyCargo();
+    document.getElementById('death-penalty-text').innerText = `Die Fracht ist verloren. Die Versicherung behält ${fee.toLocaleString('de-DE')} Cr Selbstbeteiligung. Konto, Ausbauten und Aufträge bleiben.`;
+    if (this.law.wanted > 0) this.law.onDeath();
+    this.comm.clear();
     this.saveProgress();
-    
-    if (deathScreen) {
-      deathScreen.classList.remove('hidden');
-    }
-    
-    // Release pointer lock
-    document.exitPointerLock();
+    setTimeout(() => {
+      document.getElementById('game-over-screen').classList.remove('hidden');
+      document.exitPointerLock();
+    }, 1600);
   }
 
   respawnShip() {
-    // 1. New clone hull: shields restored, cargo already lost in the explosion
-    this.ship.applyUpgrades();
-    this.ship.shield = this.ship.maxShield;
-
-    // 2. Reset solar system orbital angles
-    this.solarSystem.planets.forEach((p, idx) => {
-      if (idx > 0) {
-        p.angle = Math.random() * Math.PI * 2;
-      } else {
-        p.angle = 0; // Sun at center
-      }
-    });
-
-    this.solarSystem.stations.forEach(st => {
-      st.orbitAngle = st.planetIndex === 3 ? 0.0 : Math.PI;
-    });
-
-    this.solarSystem.asteroids.forEach(ast => {
-      ast.angle = Math.random() * Math.PI * 2;
-    });
-
-    // 3. Sync positions immediately
-    this.solarSystem.update(0);
-
-    // 4. Position player safely near the newly repositioned Earth
-    this.placeShipAtEarth();
-
-    this.ship.throttle = 0.0;
-    
-    this.ship.isDestroyed = false;
-    this.ship.isWarping = false;
+    const ship = this.ship;
+    this.surface.abort();
+    ship.applyUpgrades();
+    ship.fullRepair();
+    ship.fuel = Math.max(ship.fuel, 30);
+    ship.throttle = 0.0;
+    ship.isDestroyed = false;
+    ship.isWarping = false;
     this.warpState = null;
-    
-    this.ship.cameraMode = 'cockpit';
-    this.ship.mesh.visible = true; // Make sure ship is visible if in chase camera later
-    this.ship.mesh.position.copy(this.ship.position);
-    this.ship.mesh.quaternion.copy(this.ship.quaternion);
-
-    // 5. Clean up remaining active lasers
-    this.ship.laserBolts.forEach(bolt => {
-      this.ship.laserGroup.remove(bolt.mesh);
-      bolt.mesh.geometry.dispose();
-      bolt.mesh.material.dispose();
-    });
-    this.ship.laserBolts = [];
-
-    // 6. Clean up remaining active explosions
-    this.explosions.forEach(exp => {
-      this.scene.remove(exp.group);
-      exp.particles.forEach(p => {
-        p.mesh.geometry.dispose();
-        p.mesh.material.dispose();
-      });
-      // Dispose debris
-      if (exp.debris) {
-        exp.debris.forEach(d => {
-          d.mesh.geometry.dispose();
-          d.mesh.material.dispose();
-        });
-      }
-      // Dispose shockwaves / rings
-      if (exp.shockwaves) {
-        exp.shockwaves.forEach(s => {
-          s.mesh.geometry.dispose();
-          s.mesh.material.dispose();
-        });
-      }
-      if (exp.rings) {
-        exp.rings.forEach(r => {
-          r.mesh.geometry.dispose();
-          r.mesh.material.dispose();
-        });
-      }
-    });
-    this.explosions = [];
-
-    // 6.5. Clean up remaining active loots
-    this.loots.forEach(loot => {
-      this.scene.remove(loot.group);
-      loot.group.traverse(child => {
-        if (child.geometry) child.geometry.dispose();
-        if (child.material) child.material.dispose();
-      });
-    });
+    this.npcs.clearAll();
+    this.combat.clear();
+    this.encounters.reset();
+    this.missions.onRespawn();
+    this.loots.forEach((loot) => this.scene.remove(loot.group));
     this.loots = [];
-
+    this.placeShipAtHome();
+    ship.cameraMode = 'cockpit';
+    ship.mesh.visible = true;
     spaceAudio.setThrottle(0);
     spaceAudio.setWarp(false);
-    
-    const deathScreen = document.getElementById('game-over-screen');
-    if (deathScreen) {
-      deathScreen.classList.add('hidden');
-    }
-    
-    // Close terminal window and nav map if open
+    document.getElementById('game-over-screen').classList.add('hidden');
     this.ui.closeSpaceport();
     this.ui.navMap.close(false);
-    
     controls.requestLock();
     this.ui.updateHUDStats();
+    this.saveProgress();
   }
 
-  spawnExplosion(position, colorHex) {
-    const particleCount = 14;
-    const expGroup = new THREE.Group();
-    this.scene.add(expGroup);
+  // ----- cargo pods ------------------------------------------------------------------------------
 
-    const particles = [];
-    const size = 0.05 + Math.random() * 0.05;
-    const geom = new THREE.SphereGeometry(size, 4, 4);
-    const mat = new THREE.MeshBasicMaterial({
-      color: colorHex,
-      transparent: true,
-      opacity: 1.0
-    });
-
-    for (let i = 0; i < particleCount; i++) {
-      const mesh = new THREE.Mesh(geom, mat);
-      mesh.position.copy(position);
-      expGroup.add(mesh);
-
-      const vel = new THREE.Vector3(
-        (Math.random() - 0.5) * 15,
-        (Math.random() - 0.5) * 15,
-        (Math.random() - 0.5) * 15
-      );
-
-      particles.push({
-        mesh: mesh,
-        velocity: vel
-      });
-    }
-
-    this.explosions.push({
-      group: expGroup,
-      particles: particles,
-      life: 0.45,
-      maxLife: 0.45
-    });
+  // A floating crate: fly through it or pull it in with the tractor beam (B). good may be null for a special item.
+  spawnLoot(position, good, qty = 1, credits = 0, opts = {}) {
+    const group = new THREE.Group();
+    group.position.copy(position);
+    this.scene.add(group);
+    const color = opts.special ? 0x40f0ff : LOOT_COLORS[good] || 0xffaa00;
+    const crate = new THREE.Mesh(this.lootGeometry || (this.lootGeometry = new THREE.BoxGeometry(0.9, 0.9, 1.3)), new THREE.MeshStandardMaterial({ color: 0x55524c, roughness: 0.55, metalness: 0.7, emissive: color, emissiveIntensity: 0.18 }));
+    group.add(crate);
+    const beacon = new THREE.Sprite(this.lootBeaconMat(color));
+    beacon.scale.setScalar(1.6);
+    beacon.position.y = 0.7;
+    group.add(beacon);
+    const loot = {
+      group, crate, beacon, good, qty, credits, special: opts.special || null, onCollect: opts.onCollect || null,
+      velocity: opts.velocity ? opts.velocity.clone() : new THREE.Vector3(), spin: new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(2),
+      pulse: Math.random() * 6, life: 240,
+    };
+    this.loots.push(loot);
+    return loot;
   }
 
-  spawnPrivateerExplosion(position) {
-    const expGroup = new THREE.Group();
-    this.scene.add(expGroup);
-
-    const particles = [];
-    const debris = [];
-    const shockwaves = [];
-    const rings = [];
-    
-    // 1. Spawning expanding shockwave fireballs (expanding spheres)
-    const fireballsData = [
-      { color: 0xffffff, startSize: 0.1, expandSpeed: 20.0, maxOpacity: 1.0 }, // Bright core flash
-      { color: 0xffaa00, startSize: 0.1, expandSpeed: 14.0, maxOpacity: 0.8 }, // Main orange fireball
-      { color: 0xff3300, startSize: 0.1, expandSpeed: 9.0, maxOpacity: 0.6 }   // Outer red ring/sphere
-    ];
-    
-    fireballsData.forEach(fd => {
-      const geom = new THREE.SphereGeometry(1.0, 16, 16);
-      const mat = new THREE.MeshBasicMaterial({
-        color: fd.color,
-        transparent: true,
-        opacity: fd.maxOpacity,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false
-      });
-      const mesh = new THREE.Mesh(geom, mat);
-      mesh.position.copy(position);
-      expGroup.add(mesh);
-      
-      shockwaves.push({
-        mesh: mesh,
-        startSize: fd.startSize,
-        expandSpeed: fd.expandSpeed,
-        maxOpacity: fd.maxOpacity
-      });
-    });
-
-    // 1.5. Spawning expanding flat Praxis energy rings (expanding 2D rings)
-    const ringsData = [
-      { color: 0x00f0ff, startSize: 0.2, expandSpeed: 24.0, maxOpacity: 0.95 }, // Inner cyan energy shockwave
-      { color: 0xff5500, startSize: 0.1, expandSpeed: 18.0, maxOpacity: 0.7 }   // Outer orange heat shockwave
-    ];
-
-    ringsData.forEach(rd => {
-      const geom = new THREE.RingGeometry(0.7, 1.0, 32);
-      const mat = new THREE.MeshBasicMaterial({
-        color: rd.color,
-        transparent: true,
-        opacity: rd.maxOpacity,
-        blending: THREE.AdditiveBlending,
-        side: THREE.DoubleSide,
-        depthWrite: false
-      });
-      const mesh = new THREE.Mesh(geom, mat);
-      mesh.position.copy(position);
-      // Align horizontally
-      mesh.rotateX(Math.PI / 2);
-      expGroup.add(mesh);
-
-      rings.push({
-        mesh: mesh,
-        startSize: rd.startSize,
-        expandSpeed: rd.expandSpeed,
-        maxOpacity: rd.maxOpacity
-      });
-    });
-
-    // Add temporary point light for dynamic illumination
-    const explosionLight = new THREE.PointLight(0xffaa00, 16.0, 75.0, 1.3);
-    explosionLight.position.copy(position);
-    expGroup.add(explosionLight);
-
-    // 2. Spawning ship fragments / debris
-    const debrisCount = 12;
-    for (let i = 0; i < debrisCount; i++) {
-      const w = 0.1 + Math.random() * 0.3;
-      const h = 0.05 + Math.random() * 0.15;
-      const d = 0.1 + Math.random() * 0.4;
-      
-      const geom = new THREE.BoxGeometry(w, h, d);
-      const mat = new THREE.MeshStandardMaterial({
-        color: 0x3a424a,
-        roughness: 0.6,
-        metalness: 0.7,
-        transparent: true,
-        opacity: 1.0
-      });
-      const mesh = new THREE.Mesh(geom, mat);
-      mesh.position.copy(position);
-      expGroup.add(mesh);
-      
-      const speed = 3.0 + Math.random() * 10.0;
-      const dir = new THREE.Vector3(
-        (Math.random() - 0.5),
-        (Math.random() - 0.5),
-        (Math.random() - 0.5)
-      ).normalize();
-      const velocity = dir.multiplyScalar(speed);
-      
-      const spin = new THREE.Vector3(
-        (Math.random() - 0.5) * 8.0,
-        (Math.random() - 0.5) * 8.0,
-        (Math.random() - 0.5) * 8.0
-      );
-      
-      debris.push({
-        mesh: mesh,
-        velocity: velocity,
-        spin: spin
-      });
+  lootBeaconMat(color) {
+    this.lootMats = this.lootMats || {};
+    if (!this.lootMats[color]) {
+      const c = document.createElement('canvas');
+      c.width = c.height = 64;
+      const g = c.getContext('2d');
+      const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+      grad.addColorStop(0, 'rgba(255,255,255,1)');
+      grad.addColorStop(0.3, 'rgba(255,255,255,0.4)');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = grad;
+      g.fillRect(0, 0, 64, 64);
+      this.lootMats[color] = new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), color: new THREE.Color(color).multiplyScalar(2.5), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true });
     }
-
-    // 3. Spawning sparks/particles
-    const particleCount = 40;
-    const sparkGeom = new THREE.SphereGeometry(0.06, 4, 4);
-    const sparkMat = new THREE.MeshBasicMaterial({
-      color: 0xffaa44,
-      transparent: true,
-      opacity: 1.0
-    });
-    
-    for (let i = 0; i < particleCount; i++) {
-      const mesh = new THREE.Mesh(sparkGeom, sparkMat);
-      mesh.position.copy(position);
-      expGroup.add(mesh);
-      
-      const speed = 5.0 + Math.random() * 22.0;
-      const dir = new THREE.Vector3(
-        (Math.random() - 0.5),
-        (Math.random() - 0.5),
-        (Math.random() - 0.5)
-      ).normalize();
-      const velocity = dir.multiplyScalar(speed);
-      
-      particles.push({
-        mesh: mesh,
-        velocity: velocity
-      });
-    }
-
-    this.explosions.push({
-      group: expGroup,
-      particles: particles,
-      debris: debris,
-      shockwaves: shockwaves,
-      rings: rings,
-      light: explosionLight,
-      lightMaxIntensity: 16.0,
-      life: 0.8,
-      maxLife: 0.8
-    });
+    return this.lootMats[color];
   }
 
-  updateExplosions(delta) {
-    for (let i = this.explosions.length - 1; i >= 0; i--) {
-      const exp = this.explosions[i];
-      exp.life -= delta;
-
-      if (exp.life <= 0) {
-        // Clean up from scene
-        this.scene.remove(exp.group);
-        exp.particles.forEach(p => {
-          p.mesh.geometry.dispose();
-          p.mesh.material.dispose();
-        });
-        if (exp.debris) {
-          exp.debris.forEach(d => {
-            d.mesh.geometry.dispose();
-            d.mesh.material.dispose();
-          });
-        }
-        if (exp.shockwaves) {
-          exp.shockwaves.forEach(s => {
-            s.mesh.geometry.dispose();
-            s.mesh.material.dispose();
-          });
-        }
-        if (exp.rings) {
-          exp.rings.forEach(r => {
-            r.mesh.geometry.dispose();
-            r.mesh.material.dispose();
-          });
-        }
-        this.explosions.splice(i, 1);
-      } else {
-        const ratio = exp.life / exp.maxLife;
-        
-        // 1. Animate sparks/particles
-        exp.particles.forEach(p => {
-          p.mesh.position.add(p.velocity.clone().multiplyScalar(delta));
-          p.mesh.material.opacity = ratio;
-          p.mesh.scale.setScalar(ratio);
-        });
-
-        // 2. Animate debris chunks
-        if (exp.debris) {
-          exp.debris.forEach(d => {
-            d.mesh.position.add(d.velocity.clone().multiplyScalar(delta));
-            d.mesh.rotation.x += d.spin.x * delta;
-            d.mesh.rotation.y += d.spin.y * delta;
-            d.mesh.rotation.z += d.spin.z * delta;
-            if (ratio < 0.5) {
-              d.mesh.material.opacity = ratio * 2.0; // Fade out in the second half
-            }
-          });
-        }
-
-        // 3. Animate shockwaves
-        if (exp.shockwaves) {
-          exp.shockwaves.forEach(s => {
-            const elapsed = exp.maxLife - exp.life;
-            const size = s.startSize + elapsed * s.expandSpeed;
-            s.mesh.scale.setScalar(size);
-            s.mesh.material.opacity = ratio * s.maxOpacity;
-          });
-        }
-
-        // 4. Animate shockwave rings
-        if (exp.rings) {
-          exp.rings.forEach(r => {
-            const elapsed = exp.maxLife - exp.life;
-            const size = r.startSize + elapsed * r.expandSpeed;
-            r.mesh.scale.set(size, size, 1.0);
-            r.mesh.material.opacity = ratio * r.maxOpacity;
-          });
-        }
-
-        // 5. Fade out point light
-        if (exp.light) {
-          exp.light.intensity = ratio * exp.lightMaxIntensity;
-        }
+  collectLoot(loot) {
+    const ship = this.ship;
+    if (loot.special) {
+      this.hud.toast(`Geborgen: ${loot.special}`, 'gain');
+      sfx.pickup();
+      if (loot.onCollect) loot.onCollect();
+      return true;
+    }
+    if (loot.good) {
+      const free = ship.maxCargo - ship.getCurrentCargoWeight();
+      if (free <= 0) {
+        if (!this.cargoFullWarned) this.hud.toast('Frachtraum voll', 'warn');
+        this.cargoFullWarned = true;
+        return false;
       }
+      const n = Math.min(free, loot.qty);
+      ship.cargo[loot.good] += n;
+      loot.qty -= n;
+      this.hud.toast(`+${n} t ${GOODS[loot.good].name}${GOODS[loot.good].contraband ? ' (Schmuggelware!)' : ''}`, GOODS[loot.good].contraband ? 'warn' : 'gain');
+      if (loot.qty > 0) return false;
     }
-  }
-
-  spawnLootCargo(position) {
-    const lootGroup = new THREE.Group();
-    lootGroup.position.copy(position);
-    this.scene.add(lootGroup);
-
-    // Crate box mesh
-    const crateGeom = new THREE.BoxGeometry(0.55, 0.55, 0.55);
-    const crateMat = new THREE.MeshStandardMaterial({
-      color: 0xffaa00,
-      roughness: 0.5,
-      metalness: 0.8
-    });
-    const crateMesh = new THREE.Mesh(crateGeom, crateMat);
-    lootGroup.add(crateMesh);
-
-    // Blinking beacon point light
-    const beaconLight = new THREE.PointLight(0xffdd00, 2.5, 9.0, 1.2);
-    beaconLight.position.set(0, 0.35, 0);
-    lootGroup.add(beaconLight);
-
-    // Spark beacon mesh representing the light bulb
-    const bulbGeom = new THREE.SphereGeometry(0.08, 6, 6);
-    const bulbMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
-    const bulbMesh = new THREE.Mesh(bulbGeom, bulbMat);
-    bulbMesh.position.set(0, 0.35, 0);
-    lootGroup.add(bulbMesh);
-
-    // Random tumble spin speed
-    const spinSpeed = new THREE.Vector3(
-      (Math.random() - 0.5) * 1.5,
-      (Math.random() - 0.5) * 1.5,
-      (Math.random() - 0.5) * 1.5
-    );
-
-    this.loots.push({
-      group: lootGroup,
-      mesh: crateMesh,
-      light: beaconLight,
-      spin: spinSpeed,
-      pulseTimer: 0
-    });
+    if (loot.credits) ship.credits += loot.credits;
+    sfx.pickup();
+    this.ui.updateHUDStats();
+    return true;
   }
 
   updateLootCrates(delta) {
-    if (delta <= 0) return;
-
-    // Check if tractor beam is active (B key is held)
-    const isTractorActive = controls.keys.tractorBeam && !this.ship.isDestroyed && !this.ship.isDocked;
+    const ship = this.ship;
+    const isTractorActive = controls.keys.tractorBeam && !ship.isDestroyed && !ship.isDocked;
     spaceAudio.setTractorBeam(isTractorActive);
-
     let nearestCrate = null;
     let minCrateDist = Infinity;
+    this.cargoFullWarned = this.cargoFullWarned && this.loots.some((l) => l.group.position.distanceTo(ship.position) < 4);
 
     for (let i = this.loots.length - 1; i >= 0; i--) {
       const loot = this.loots[i];
-      
-      // Rotate/Tumble
-      loot.mesh.rotation.x += loot.spin.x * delta;
-      loot.mesh.rotation.y += loot.spin.y * delta;
-      loot.mesh.rotation.z += loot.spin.z * delta;
+      loot.life -= delta;
+      loot.crate.rotation.x += loot.spin.x * delta;
+      loot.crate.rotation.y += loot.spin.y * delta;
+      loot.crate.rotation.z += loot.spin.z * delta;
+      loot.pulse += delta * 5;
+      loot.beacon.scale.setScalar(1.2 + Math.sin(loot.pulse) * 0.5);
+      loot.group.position.addScaledVector(loot.velocity, delta);
+      loot.velocity.multiplyScalar(1 - Math.min(1, delta * 0.4));
 
-      // Pulse beacon light
-      loot.pulseTimer += delta * 6;
-      loot.light.intensity = 2.0 + Math.sin(loot.pulseTimer) * 1.8;
-
-      // Check distance to player ship for collection or tractor beam pull
-      const toShip = this.ship.position.clone().sub(loot.group.position);
+      const toShip = ship.position.clone().sub(loot.group.position);
       const dist = toShip.length();
-
-      // Tractor beam pulls crates within 150 units towards the ship
-      if (isTractorActive && dist < 150.0) {
-        const pullDir = toShip.clone().normalize();
-        // Crate accelerates as it gets closer to the ship
-        const pullSpeed = 22.0 + (150.0 - dist) * 0.12; 
-        loot.group.position.add(pullDir.multiplyScalar(pullSpeed * delta));
-
+      if (isTractorActive && dist < TRACTOR_RANGE) {
+        const pullSpeed = 26.0 + (TRACTOR_RANGE - dist) * 0.14;
+        loot.group.position.addScaledVector(toShip.normalize(), Math.min(dist, pullSpeed * delta));
+        loot.velocity.copy(ship.velocity);
         if (dist < minCrateDist) {
           minCrateDist = dist;
           nearestCrate = loot;
         }
       }
 
-      if (dist < 2.2) {
-        // Collect beep
-        spaceAudio.playBeep();
-        
-        // Award credits & cargo
-        this.ship.credits += 200;
-        
-        const currentWeight = this.ship.getCurrentCargoWeight();
-        if (currentWeight < this.ship.maxCargo) {
-          const items = ['ore', 'ice', 'tech'];
-          const randomItem = items[Math.floor(Math.random() * items.length)];
-          this.ship.cargo[randomItem]++;
-        }
-
-        // Clean up from scene
+      const gone = loot.life <= 0;
+      if (gone || (dist < 3.2 && this.collectLoot(loot))) {
         this.scene.remove(loot.group);
-        loot.group.traverse(child => {
-          if (child.geometry) child.geometry.dispose();
-          if (child.material) child.material.dispose();
-        });
-
+        loot.crate.material.dispose();
+        if (ship.targetObject && ship.targetObject.mesh === loot.group) ship.targetObject = null;
         this.loots.splice(i, 1);
-        this.ui.updateHUDStats();
       }
     }
 
-    // Update tractor beam visual line geometry
     if (isTractorActive && nearestCrate) {
-      // Tractor beam starts slightly forward of ship center (nose)
-      const noseOffset = new THREE.Vector3(0, 0, -1).applyQuaternion(this.ship.quaternion).multiplyScalar(0.8);
-      const startPos = this.ship.position.clone().add(noseOffset);
-      const endPos = nearestCrate.group.position;
-
-      const points = [startPos, endPos];
-      this.tractorBeamLine.geometry.setFromPoints(points);
-      this.tractorBeamLine.geometry.verticesNeedUpdate = true;
-      this.tractorBeamLine.material.opacity = 0.5 + Math.sin(Date.now() * 0.02) * 0.35; // pulsing glow
+      const startPos = ship.position.clone().add(new THREE.Vector3(0, -0.4, -1.2).applyQuaternion(ship.quaternion));
+      this.tractorBeamLine.geometry.setFromPoints([startPos, nearestCrate.group.position]);
+      this.tractorBeamLine.material.opacity = 0.55 + Math.sin(Date.now() * 0.02) * 0.35;
     } else {
-      this.tractorBeamLine.material.opacity = 0; // invisible
+      this.tractorBeamLine.material.opacity = 0;
     }
   }
 }

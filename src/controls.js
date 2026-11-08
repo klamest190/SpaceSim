@@ -9,9 +9,11 @@ class Controls {
       strafeLeft: false,   // Q
       strafeRight: false,  // E
       shoot: false,        // Space or Left Mouse Click
-      freeLook: false,     // Right Mouse Click
-      tractorBeam: false   // B
+      freeLook: false,     // Middle Mouse Button (hold)
+      tractorBeam: false,  // B
+      boost: false         // Shift: afterburner
     };
+    this.onLockChange = null;
 
     // Direct mouse movement deltas for 1:1 steering or free-look
     this.mouseDelta = {
@@ -100,6 +102,7 @@ class Controls {
       // Reset keyboard inputs when focus lost
       Object.keys(this.keys).forEach(k => this.keys[k] = false);
     }
+    if (this.onLockChange) this.onLockChange(this.pointerLocked);
   }
 
   // Register single-press events (e.g. toggles)
@@ -152,6 +155,35 @@ class Controls {
       case 'KeyB':
         this.keys.tractorBeam = true;
         break;
+      case 'ShiftLeft':
+      case 'ShiftRight':
+        this.keys.boost = true;
+        break;
+      case 'KeyK':
+        keyTriggered = 'k';
+        break;
+      case 'KeyI':
+        keyTriggered = 'i';
+        break;
+      case 'KeyO':
+        keyTriggered = 'o';
+        break;
+      case 'Digit1':
+      case 'Numpad1':
+        keyTriggered = '1';
+        break;
+      case 'Digit2':
+      case 'Numpad2':
+        keyTriggered = '2';
+        break;
+      case 'Digit3':
+      case 'Numpad3':
+        keyTriggered = '3';
+        break;
+      case 'Digit4':
+      case 'Numpad4':
+        keyTriggered = '4';
+        break;
       
       // System Triggers
       case 'KeyX':
@@ -203,6 +235,7 @@ class Controls {
 
     if (e.repeat && keyTriggered && !['up', 'down'].includes(keyTriggered)) return;
 
+    if (keyTriggered && e.target && e.target.tagName === 'INPUT') return;
     if (keyTriggered && this.listeners[keyTriggered]) {
       this.listeners[keyTriggered].forEach(cb => cb());
     }
@@ -234,6 +267,10 @@ class Controls {
       case 'KeyB':
         this.keys.tractorBeam = false;
         break;
+      case 'ShiftLeft':
+      case 'ShiftRight':
+        this.keys.boost = false;
+        break;
     }
   }
 
@@ -250,15 +287,18 @@ class Controls {
 
     if (e.button === 0) {
       this.keys.shoot = true; // Left click shoots
-    } else if (e.button === 2) {
-      this.keys.freeLook = true; // Right click free-look
+    } else if (e.button === 1) {
+      e.preventDefault();
+      this.keys.freeLook = true; // Middle button: look around
+    } else if (e.button === 2 && this.listeners.rmb) {
+      this.listeners.rmb.forEach((cb) => cb()); // Right button: missile
     }
   }
 
   handleMouseUp(e) {
     if (e.button === 0) {
       this.keys.shoot = false;
-    } else if (e.button === 2) {
+    } else if (e.button === 1) {
       this.keys.freeLook = false;
     }
   }

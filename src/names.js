@@ -1,4 +1,6 @@
-// German display names for bodies whose internal ids are English
+import { STATION_DEFS } from './world';
+
+// German display names for bodies whose internal ids are English, and the short names of stations
 const DE_NAMES = {
   Sun: 'Sonne',
   Mercury: 'Merkur',
@@ -9,9 +11,12 @@ const DE_NAMES = {
   Saturn: 'Saturn',
   Uranus: 'Uranus',
   Neptune: 'Neptun',
-  'Erde Orbital-Station': 'Erde-Station',
-  'Mars Außenposten': 'Mars-Posten'
+  Moon: 'Mond',
+  Io: 'Io',
+  Europa: 'Europa',
+  Titan: 'Titan',
 };
+STATION_DEFS.forEach((d) => { DE_NAMES[d.name] = d.short; });
 
 export function displayName(name) {
   return DE_NAMES[name] || name;
