@@ -28,6 +28,7 @@ function targetKind(target, game) {
     return `${FACTION_LABEL[target.faction] || ''} ${target.spec.label.toUpperCase()}${hostile ? ' · FEIND' : ''}${bounty}`;
   }
   if (target.kind === 'waypoint') return 'NAVPUNKT';
+  if (target.kind === 'comet') return target.activity > 0.05 ? 'KOMET · AKTIV' : 'KOMET · RUHEND';
   if (target.kind === 'asteroid') return `ASTEROID · ${target.rockKind === 'ice' ? 'EIS' : target.rockKind === 'ore' ? 'ERZ' : 'GESTEIN'}`;
   if (target.name === 'Sun') return 'STERN';
   if (target.group && target.radius) return target.parent ? `MOND · ${displayName(target.parent.name).toUpperCase()}` : 'PLANET';
@@ -210,6 +211,7 @@ export class UI {
 
     // Cockpit vs. external view
     this.cockpitLayer = document.getElementById('cockpit-layer');
+    this.commVdu = document.getElementById('comm-vdu');
     this.frameLight = {};
     this.extAim = document.getElementById('ext-aim');
     this.extThrottle = document.getElementById('ext-throttle');
@@ -409,6 +411,7 @@ export class UI {
     if (!this.passiveContainer) return;
     this.game.solarSystem.planets.forEach(p => this.createMarkerElement(p, 'planet'));
     this.game.solarSystem.stations.forEach(st => this.createMarkerElement(st, 'station'));
+    this.game.solarSystem.comets.list.forEach(c => this.createMarkerElement(c, 'comet'));
   }
 
   createMarkerElement(obj, type) {
@@ -474,6 +477,8 @@ export class UI {
     if (!external) {
       this.swingCockpit(ship, camera);
       this.lightCockpit(ship, solarSystem);
+    } else if (this.commVdu.style.transform) {
+      this.commVdu.style.transform = '';
     }
 
     // Passive destination markers (planets, stations)
@@ -484,7 +489,7 @@ export class UI {
           pm.element.classList.add('hidden');
           return;
         }
-        const targetPos = (pm.type === 'station' ? pm.object.mesh.position : pm.object.group.position).clone();
+        const targetPos = (pm.type === 'planet' ? pm.object.group.position : pm.object.mesh.position).clone();
         targetPos.project(camera);
         if (targetPos.z > 1 || Math.abs(targetPos.x) > 1.1 || Math.abs(targetPos.y) > 1.1) {
           pm.element.classList.add('hidden');
@@ -719,7 +724,10 @@ export class UI {
     const pitch = THREE.MathUtils.clamp(ship.headLook.pitch, -1.0, 1.0);
     const x = -Math.tan(yaw) * focal;
     const y = -Math.tan(pitch) * focal;
-    this.cockpitLayer.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
+    const shift = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
+    this.cockpitLayer.style.transform = shift;
+    // The comm monitor is bolted to the canopy bow, but lives outside the layer so calls still show in external view
+    this.commVdu.style.transform = shift;
   }
 
   // Height over the nearest planet's surface, in that planet's own kilometres (Earth's floor is about 100 km)
@@ -801,6 +809,7 @@ export class UI {
     set('sperre', this.lockedOut ? 'warn' : '');
     set('fahndung', law.wanted >= 2 ? 'alarm' : law.wanted === 1 ? 'warn' : '');
     set('fracht', ship.getCurrentCargoWeight() >= ship.maxCargo ? 'warn' : '');
+    set('hitze', this.game.heat.lampState());
   }
 
   // The keys that matter right now: fly to the target; held at a station, how to dock or get away;
@@ -993,6 +1002,13 @@ export class UI {
       const targeted = ship.targetObject === p;
       plot(p.group.position, (ctx, x, y) => {
         dot(p.name === 'Sun' ? '#ffb000' : 'rgba(92, 255, 122, 0.55)', p.radius > 300 ? 3 : 2)(ctx, x, y);
+        if (targeted) ring(ctx, x, y);
+      });
+    });
+    solarSystem.comets.list.forEach((c) => {
+      const targeted = ship.targetObject === c;
+      plot(c.mesh.position, (ctx, x, y) => {
+        dot('#7fffd0', 2)(ctx, x, y);
         if (targeted) ring(ctx, x, y);
       });
     });

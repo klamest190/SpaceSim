@@ -52,7 +52,8 @@ export class NavMap {
         stations.filter(st => st.planetIndex === 0 && !st.hidden).forEach(st => this.entries.push({ object: st, kind: 'station' }));
       }
     });
-    this.entries.unshift(...(dest && dest.kind === 'waypoint' ? [] : []), { object: planets[0], kind: 'planet' });
+    this.game.solarSystem.comets.list.forEach((c) => this.entries.push({ object: c, kind: 'comet' }));
+    this.entries.unshift({ object: planets[0], kind: 'planet' });
     if (dest && dest.kind === 'waypoint') {
       // keep the waypoint on top
       const wp = this.entries.findIndex((e) => e.kind === 'waypoint');
@@ -66,7 +67,8 @@ export class NavMap {
       li.className = entry.kind;
       const name = document.createElement('span');
       name.textContent = entry.kind === 'waypoint' ? `◆ ${entry.object.name}`
-        : entry.kind === 'moon' ? `· ${displayName(entry.object.name).toUpperCase()}` : displayName(entry.object.name).toUpperCase();
+        : entry.kind === 'moon' ? `· ${displayName(entry.object.name).toUpperCase()}`
+        : entry.kind === 'comet' ? `KOMET ${entry.object.name.toUpperCase()}` : displayName(entry.object.name).toUpperCase();
       const dist = document.createElement('span');
       dist.className = 'nav-dist';
       li.append(name, dist);
@@ -222,7 +224,8 @@ export class NavMap {
     const cost = this.game.warpCost(dist);
     const kind = entry.kind === 'waypoint' ? 'Navpunkt · Auftragsziel'
       : entry.kind === 'station' ? (entry.object.def.faction === 'pirate' ? 'Piratenbasis' : entry.object.def.blackMarket ? 'Raumstation · Schwarzmarkt' : 'Raumstation · Handel und Werft')
-      : entry.object.name === 'Sun' ? 'Stern · Vorsicht, Schwerefeld'
+      : entry.kind === 'comet' ? (entry.object.activity > 0.05 ? 'Komet · Schweif aktiv, Eisbrocken zum Abbau' : 'Komet · fern der Sonne, ruhend')
+      : entry.object.name === 'Sun' ? 'Stern · Vorsicht: Schwerefeld und Hitze'
       : entry.kind === 'moon' ? `Mond von ${displayName(entry.object.parent.name)}` : 'Planet';
     const fuel = this.game.ship.fuel;
     const lines = [
@@ -293,6 +296,22 @@ export class NavMap {
     ctx.arc(c, c, (beltIn.x + beltOut.x) / 2 - c, 0, Math.PI * 2);
     ctx.stroke();
     ctx.lineWidth = 1;
+
+    // Comets: a dot with its tail pointing away from the Sun
+    this.entries.filter(e => e.kind === 'comet').forEach(entry => {
+      const p = this.entryMapPos(entry);
+      const a = Math.atan2(p.y - c, p.x - c);
+      const len = 6 + 14 * Math.min(1, entry.object.activity);
+      ctx.strokeStyle = 'rgba(127, 255, 208, 0.7)';
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(p.x + Math.cos(a) * len, p.y + Math.sin(a) * len);
+      ctx.stroke();
+      ctx.fillStyle = '#7fffd0';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    });
 
     // Mission waypoint
     this.entries.filter(e => e.kind === 'waypoint').forEach(entry => {

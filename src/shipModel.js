@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { glowColor } from './heat';
 
 // The player's freighter: a chunky, faceted working ship in the spirit of the 90s cockpit sims,
 // rendered with today's materials. Flat-shaded hull lofted from chamfered sections, painted livery
@@ -550,6 +551,22 @@ export class ShipModel {
     });
     this.group.add(new THREE.Mesh(finish(merge(rcs), () => PAINT.dark, 3), darkMat));
 
+    // ---- Radiators: two graphite panels standing in a V over the stern; they glow with the ship's waste heat
+    this.radiatorMat = new THREE.MeshStandardMaterial({
+      color: 0x17181a, roughness: 0.6, metalness: 0.4, envMap: env, envMapIntensity: 0.6, emissive: 0x000000, side: THREE.DoubleSide,
+    });
+    [-1, 1].forEach((side) => {
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.016, 0.78), this.radiatorMat);
+      panel.position.set(side * 0.47, 0.42, 0.36);
+      panel.rotation.z = side * THREE.MathUtils.degToRad(38);
+      this.group.add(panel);
+      // Coolant pipes along the panel
+      const ribs = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.03, 0.78), darkMat);
+      ribs.position.copy(panel.position);
+      ribs.rotation.copy(panel.rotation);
+      this.group.add(ribs);
+    });
+
     // ---- Markings on both hull sides
     const decalMat = new THREE.MeshStandardMaterial({
       map: makeDecalTexture('SOL 4471'), transparent: true, roughness: 0.7, metalness: 0.2,
@@ -627,13 +644,21 @@ export class ShipModel {
     });
   }
 
-  // Engine power 0..1, warp/autopilot cruise, and a slow blink for the nav lights
-  update(delta, power, cruising) {
+  // The radiators glow dull red, orange, then yellow-white as the ship heats up
+  setHeat(heat) {
+    if (Math.abs(heat - (this.shownHeat ?? -1)) < 0.004) return;
+    this.shownHeat = heat;
+    glowColor(heat, this.radiatorMat.emissive);
+  }
+
+  // Engine power 0..1, warp/autopilot cruise, afterburner, and a slow blink for the nav lights
+  update(delta, power, cruising, boosting = false) {
     this.time += delta;
     const p = THREE.MathUtils.clamp(power, 0, 1);
     // Ion blue idles dim and burns white-blue at full thrust; cruising under autopilot burns amber
-    const hue = cruising ? new THREE.Color(1.0, 0.45, 0.12) : new THREE.Color(0.25, 0.55, 1.0);
-    const core = cruising ? new THREE.Color(1.0, 0.85, 0.6) : new THREE.Color(0.8, 0.92, 1.0);
+    // The afterburner feeds raw hydrogen into the jet: it burns in hydrogen's own pink and violet
+    const hue = cruising ? new THREE.Color(1.0, 0.45, 0.12) : boosting ? new THREE.Color(0.95, 0.3, 0.85) : new THREE.Color(0.25, 0.55, 1.0);
+    const core = cruising ? new THREE.Color(1.0, 0.85, 0.6) : boosting ? new THREE.Color(1.0, 0.8, 1.0) : new THREE.Color(0.8, 0.92, 1.0);
     const level = cruising ? 1.0 : 0.12 + p * 0.88;
     this.plumes.forEach((plume, i) => {
       const u = plume.material.uniforms;

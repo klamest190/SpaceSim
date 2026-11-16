@@ -18,6 +18,10 @@
     <div id="reentry-glow" class="atmo-overlay"></div>
     <div id="cloud-fog" class="atmo-overlay"></div>
     <div id="atmo-flash" class="atmo-overlay"></div>
+    <!-- Overheating: the air in the cockpit shimmers red from the edges -->
+    <div id="heat-glow" class="atmo-overlay"></div>
+    <!-- Photo mode -->
+    <div id="photo-hint" class="photo-hint">FOTOMODUS · Maus: drehen · Mausrad: Abstand · W / S: Zoom · A / D: Horizont · Q / E: seitlich · Enter / Klick: Bild speichern · P: zurück</div>
 
     <!-- Start Screen: one VDU in a metal bezel, the solar system turning behind it -->
     <div id="start-screen" class="overlay overlay-start">
@@ -102,7 +106,7 @@
         <ul class="overlay-keys-list">
           <li><span>Maus</span> Schiff ausrichten</li>
           <li><span>W / S</span> Schub / Rückwärts</li>
-          <li><span>Umschalt</span> Nachbrenner</li>
+          <li><span>Y · Umschalt</span> Nachbrenner (halten)</li>
           <li><span>A / D</span> Rollen</li>
           <li><span>Q / E</span> Seitwärts</li>
           <li><span>Linksklick</span> Laser</li>
@@ -117,12 +121,16 @@
           <li><span>G</span> Andocken / Ablegen</li>
           <li><span>1 2 3</span> Funk beantworten</li>
           <li><span>I / Esc</span> Logbuch &amp; Pause</li>
-          <li><span>F</span> Stabilisator</li>
+          <li><span>F</span> Stabilisator (aus: freier Fall, die Bahnvorschau zeigt, wohin)</li>
+          <li><span>L</span> Notkühlung: 1 t Eis verdampfen</li>
+          <li><span>P</span> Fotomodus</li>
           <li><span>C · Mausrad</span> Cockpit / Außen</li>
           <li><span>Mittlere Maustaste</span> Umschauen</li>
           <li><span>M · O</span> Ton · Musik</li>
           <li><span>Planet anfliegen</span> Steil in die Atmosphäre: Atmosphärenflug (Merkur, Venus, Erde, Mars)</li>
           <li><span>Schub 0</span> In der Atmosphäre sinken und landen · Schub hebt ab · hoch steigen führt zurück in den Orbit</li>
+          <li><span>Gasriesen</span> Durch die Hochatmosphäre fliegen schöpft Treibstoff, heizt aber auf</li>
+          <li><span>Hitze</span> Sonne, Nachbrenner, Laser und Wiedereintritt heizen · im Schatten kühlst du am schnellsten</li>
         </ul>
       </div>
 
@@ -174,7 +182,7 @@
             <span class="lamp" data-lamp="halten">HALTEN</span>
             <span class="lamp" data-lamp="andock">ANDOCKEN</span>
             <span class="lamp" data-lamp="schwere">SCHWERE</span>
-            <span class="lamp" data-lamp="hoehe">HÖHE</span>
+            <span class="lamp" data-lamp="hitze">HITZE</span>
             <span class="lamp" data-lamp="schild">SCHILD</span>
             <span class="lamp" data-lamp="huelle">HÜLLE</span>
             <span class="lamp" data-lamp="rakete">RAKETE</span>
@@ -236,6 +244,8 @@
               <div class="vdu-row"><span>LASER</span><span class="amber-text"><span id="weapon-energy-val">100</span>%</span></div>
               <div class="energy-gauge"><div class="energy-bar" id="weapon-energy-bar" style="width: 100%;"></div></div>
               <div class="energy-gauge boost-gauge" title="Nachbrenner"><div class="energy-bar boost" id="boost-bar" style="width: 100%;"></div></div>
+              <div class="vdu-row"><span>TEMP</span><span class="amber-text"><span id="heat-val">15</span>%</span></div>
+              <div class="energy-gauge heat-gauge" title="Temperatur der Radiatoren"><div class="energy-bar heat" id="heat-bar" style="width: 15%;"></div></div>
               <div class="vdu-row"><span>SPRIT <b id="fuel-val" class="amber-text">100</b></span><span>RAK <b id="missile-val" class="amber-text">2</b> TK <b id="flare-val" class="amber-text">4</b></span></div>
               <div class="vdu-row ledger">KONTO <span><span id="hud-credits" class="amber-text">1000</span> Cr</span></div>
               <div class="vdu-row">FRACHT <span><span id="hud-cargo">0 / 20</span> t</span></div>
@@ -257,6 +267,7 @@
         <div class="ext-row"><span>TEMPO</span><b id="ext-speed">0 km/s</b></div>
         <div class="ext-row"><span>SCHILD</span><b id="ext-shield">100%</b></div>
         <div class="ext-row"><span>HÜLLE</span><b id="ext-hull">100%</b></div>
+        <div class="ext-row"><span>TEMP</span><b id="ext-heat">15%</b></div>
         <div class="ext-row"><span>ZIEL</span><b id="ext-target">---</b></div>
         <div class="ext-row"><span>AUTOPILOT</span><b id="ext-autopilot">BEREIT</b></div>
         <div class="ext-hint">Mausrad: ins Cockpit · N: Navkarte</div>
@@ -278,14 +289,15 @@
         <span>STRAHLUNG</span>
       </div>
       <div id="hud-altitude" class="hud-altitude hidden">HÖHE <b id="hud-altitude-value">---</b></div>
+      <div id="hud-flightinfo" class="hud-flightinfo hidden"></div>
 
       <!-- Comm VDU: who is calling, what they say, and what you can answer -->
-      <div id="comm-vdu" class="bezel comm-bezel hidden" role="status" aria-live="polite" data-faction="control">
-        <div class="plate-label">Funk</div>
+      <div id="comm-vdu" class="bezel comm-bezel idle" role="status" aria-live="polite" data-faction="control">
+        <div class="plate-label">Funk<i class="comm-lamp" aria-hidden="true"></i></div>
         <div class="vdu comm-screen">
           <canvas id="comm-portrait" class="comm-portrait" width="32" height="32"></canvas>
           <div class="comm-body">
-            <div id="comm-speaker" class="comm-speaker">FUNK</div>
+            <div id="comm-speaker" class="comm-speaker">KEIN SIGNAL</div>
             <p id="comm-text"></p>
             <div id="comm-options" class="comm-options"></div>
           </div>

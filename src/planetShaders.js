@@ -547,6 +547,110 @@ void bakePlanet(vec3 p, out vec4 col, out vec4 aux) {
 }
 #endif
 
+#ifdef GANYMEDE
+void bakePlanet(vec3 p, out vec4 col, out vec4 aux) {
+  vec3 w = vec3(fbm(p * 2.0, 4), fbm(p * 2.0 + 5.0, 4), fbm(p * 2.0 + 9.0, 4));
+  // Old, dark, heavily cratered regions (Galileo Regio the largest) cut up by lanes of younger, bright grooved ice
+  float regio = fbm(p * 1.6 + w * 0.5 + 11.0, 5);
+  float galileo = 1.0 - smoothstep(0.45, 0.6, angleTo(p, selDir(35.0, -145.0)) + 0.08 * fbm(p * 6.0, 3));
+  float dark = clamp(smoothstep(-0.04, 0.1, regio) + galileo, 0.0, 1.0);
+  float lanes = 1.0 - smoothstep(0.0, 0.07, abs(snoise(p * 2.3 + w * 0.6 + 3.0)));
+  lanes = max(lanes, 1.0 - smoothstep(0.0, 0.05, abs(snoise(p * 4.1 + w + 17.0))));
+  dark *= 1.0 - lanes * 0.9;
+  // Sulci: sets of parallel ridges, each set running its own way
+  vec3 gdir = normalize(vec3(fbm(p * 1.2 + 2.0, 3), fbm(p * 1.2 + 6.0, 3), fbm(p * 1.2 + 8.0, 3)) + 0.001);
+  float grooves = sin(dot(p, gdir) * 260.0 + 6.0 * fbm(p * 5.0, 3));
+  vec3 bright = vec3(0.68, 0.65, 0.60) * (0.95 + 0.06 * grooves);
+  vec3 darkC = vec3(0.36, 0.30, 0.24) * (0.9 + 0.25 * fbm(p * 9.0, 4));
+  vec3 c = mix(bright, darkC, dark);
+  float glow = 0.0;
+  float crater = craters(p, 1.5, glow);
+  // Young craters punch through to clean ice and throw bright rays across both terrains
+  float rays = crRays(p, selDir(-38.0, -166.0), 0.3, 2.0) * 0.7 + crRays(p, selDir(11.0, -27.0), 0.16, 7.0) * 0.6;
+  c = mix(c, vec3(0.92, 0.92, 0.90), clamp(glow * 0.7 + rays, 0.0, 1.0) * 0.6);
+  // Frost caps on both poles
+  float polar = smoothstep(0.62, 0.85, abs(p.y) + 0.06 * fbm(p * 5.0 + 2.0, 4));
+  c = mix(c, vec3(0.84, 0.85, 0.86), polar * 0.55);
+  float h = crater * mix(0.6, 1.2, dark) + (1.0 - dark) * grooves * 0.004 + fbm(p * 3.0, 5) * 0.02;
+  col = vec4(c, h);
+  aux = vec4(0.0);
+}
+#endif
+
+#ifdef CALLISTO
+void bakePlanet(vec3 p, out vec4 col, out vec4 aux) {
+  // The most heavily cratered surface known: crater upon crater, nothing has repaved it in four billion years
+  float glow = 0.0;
+  float crater = craters(p, 1.4, glow) + 0.7 * craters(p, 2.6, glow);
+  vec3 c = mix(vec3(0.21, 0.18, 0.15), vec3(0.32, 0.27, 0.22), smoothstep(-0.3, 0.4, fbm(p * 3.0 + 7.0, 5)));
+  c *= 0.9 + 0.2 * fbm(p * 30.0, 3);
+  // Valhalla: a bright scar ringed by ripples frozen into the crust, 3.800 km across
+  float dV = angleTo(p, selDir(15.0, -56.0)) + 0.02 * fbm(p * 10.0, 3);
+  float palimpsest = 1.0 - smoothstep(0.08, 0.16, dV);
+  float ripples = pow(0.5 + 0.5 * sin(dV * 110.0 + 2.0 * fbm(p * 8.0, 3)), 4.0) * smoothstep(0.75, 0.2, dV) * smoothstep(0.12, 0.2, dV);
+  c = mix(c, vec3(0.64, 0.60, 0.53), palimpsest * 0.8);
+  c = mix(c, vec3(0.44, 0.40, 0.34), ripples * 0.5);
+  // Frost on the rims and peaks: thousands of bright specks on dark ground
+  c = mix(c, vec3(0.82, 0.82, 0.80), clamp(glow * 0.9 + smoothstep(0.004, 0.02, crater) * 0.5, 0.0, 1.0));
+  float h = crater * 1.2 + ripples * 0.01 + fbm(p * 3.0, 4) * 0.01;
+  col = vec4(c, h);
+  aux = vec4(0.0);
+}
+#endif
+
+#ifdef ENCELADUS
+void bakePlanet(vec3 p, out vec4 col, out vec4 aux) {
+  // The whitest world there is: fresh snow from its own geysers
+  vec3 c = vec3(0.96, 0.97, 0.98) * (0.96 + 0.05 * fbm(p * 8.0, 4));
+  float glow = 0.0;
+  float crater = craters(p, 1.8, glow);
+  // Craters only in the old north; the south is young, smooth and cracked
+  float north = smoothstep(-0.2, 0.5, p.y + 0.15 * fbm(p * 3.0, 4));
+  float h = crater * north * 1.2;
+  c *= 1.0 + clamp(crater, -0.05, 0.0) * north * 2.5;
+  float web = (1.0 - smoothstep(0.0, 0.04, abs(snoise(p * 9.0 + 3.0)))) * (1.0 - north * 0.7);
+  web = max(web, (1.0 - smoothstep(0.0, 0.03, abs(snoise(p * 21.0 + 8.0)))) * 0.5 * (1.0 - north));
+  c = mix(c, vec3(0.78, 0.87, 0.94), web * 0.5);
+  h += web * 0.006;
+  // Tiger stripes: four parallel fractures at the south pole, blue-green with coarse fresh ice, where the jets rise
+  float sx = p.x * 0.825 + p.z * 0.565;
+  float sz = -p.x * 0.565 + p.z * 0.825;
+  float stripes = 0.0;
+  for (int i = 0; i < 4; i++) {
+    float off = (float(i) - 1.5) * 0.11;
+    float d = abs(sx - off + 0.02 * sin(sz * 14.0 + float(i) * 2.0));
+    stripes = max(stripes, exp(-pow(d / 0.012, 2.0)) * (1.0 - smoothstep(0.26, 0.4, abs(sz))));
+  }
+  stripes *= smoothstep(-0.8, -0.9, p.y);
+  c = mix(c, vec3(0.40, 0.72, 0.82), stripes * 0.85);
+  h -= stripes * 0.02;
+  col = vec4(c, h);
+  aux = vec4(0.0);
+}
+#endif
+
+#ifdef TRITON
+void bakePlanet(vec3 p, out vec4 col, out vec4 aux) {
+  // North: blue-grey plains and the dimpled "cantaloupe" terrain, a net of ridges round shallow pits
+  float cells = 1.0 - smoothstep(0.0, 0.25, abs(snoise(p * 22.0)));
+  vec3 canta = mix(vec3(0.56, 0.62, 0.64), vec3(0.42, 0.48, 0.52), cells * 0.6);
+  float cantaM = smoothstep(-0.1, 0.2, fbm(p * 1.5 + 4.0, 4));
+  vec3 northC = mix(vec3(0.63, 0.66, 0.68), canta, cantaM);
+  // South: a cap of pink nitrogen and methane frost with a ragged edge near the equator
+  float cap = smoothstep(0.1, -0.15, p.y + 0.18 * fbm(p * 4.0 + 9.0, 5));
+  vec3 capC = mix(vec3(0.88, 0.72, 0.68), vec3(0.95, 0.85, 0.80), smoothstep(-0.3, 0.3, fbm(p * 6.0, 4)));
+  vec3 c = mix(northC, capC, cap);
+  // Dark streaks blown downwind from the nitrogen geysers on the cap
+  float streak = smoothstep(0.18, 0.4, fbm(vec3(p.x * 5.0, p.y * 40.0, p.z * 5.0) + 3.0, 3)) * cap * smoothstep(-0.15, -0.5, p.y);
+  c = mix(c, vec3(0.22, 0.18, 0.18), streak * 0.7);
+  c *= 0.95 + 0.1 * fbm(p * 30.0, 3);
+  float glow = 0.0;
+  float h = cells * 0.012 * cantaM * (1.0 - cap) + craters(p, 2.0, glow) * 0.25 + fbm(p * 4.0, 4) * 0.008;
+  col = vec4(c, h);
+  aux = vec4(0.0);
+}
+#endif
+
 #ifdef EARTH
 void bakePlanet(vec3 p, out vec4 col, out vec4 aux) {
   vec3 q = p * 1.15;

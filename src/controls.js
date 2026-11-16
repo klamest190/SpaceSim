@@ -11,7 +11,7 @@ class Controls {
       shoot: false,        // Space or Left Mouse Click
       freeLook: false,     // Middle Mouse Button (hold)
       tractorBeam: false,  // B
-      boost: false         // Shift: afterburner
+      boost: false         // Shift or Y: afterburner
     };
     this.onLockChange = null;
 
@@ -113,8 +113,20 @@ class Controls {
     this.listeners[key].push(callback);
   }
 
+  // Afterburner keys held right now: Shift or Y. Y is matched by the letter it types, not by its position,
+  // so it is the key labelled Y on a German keyboard too.
+  holdBoost(e, down) {
+    const name = e.code.startsWith('Shift') ? e.code : (e.key || '').toLowerCase() === 'y' ? 'y' : null;
+    if (!name) return;
+    this.boostKeys = this.boostKeys || new Set();
+    if (down) this.boostKeys.add(name);
+    else this.boostKeys.delete(name);
+    this.keys.boost = this.boostKeys.size > 0;
+  }
+
   handleKeyDown(e) {
     let keyTriggered = null;
+    this.holdBoost(e, true);
 
     switch (e.code) {
       // Throttle W / S
@@ -154,10 +166,6 @@ class Controls {
       // Tractor beam B
       case 'KeyB':
         this.keys.tractorBeam = true;
-        break;
-      case 'ShiftLeft':
-      case 'ShiftRight':
-        this.keys.boost = true;
         break;
       case 'KeyK':
         keyTriggered = 'k';
@@ -216,6 +224,12 @@ class Controls {
       case 'KeyJ':
         keyTriggered = 'j';
         break;
+      case 'KeyL':
+        keyTriggered = 'l';
+        break;
+      case 'KeyP':
+        keyTriggered = 'p';
+        break;
 
       // Menu navigation (nav computer)
       case 'ArrowUp':
@@ -267,11 +281,8 @@ class Controls {
       case 'KeyB':
         this.keys.tractorBeam = false;
         break;
-      case 'ShiftLeft':
-      case 'ShiftRight':
-        this.keys.boost = false;
-        break;
     }
+    this.holdBoost(e, false);
   }
 
   handleMouseMove(e) {

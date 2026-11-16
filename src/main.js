@@ -27,6 +27,11 @@ import { GOODS, emptyCargo, STARTING_DEBT } from './world';
 import { DIFFICULTIES, difficultyOf } from './difficulty';
 import { EyeAdaptation } from './exposure';
 import { SolarStorm } from './solarStorm';
+import { Thermal } from './heat';
+import { Aero } from './aero';
+import { Trajectory } from './trajectory';
+import { RingField } from './ringField';
+import { PhotoMode } from './photo';
 import './style.css';
 
 const AUTOSAVE_INTERVAL = 15; // seconds
@@ -90,6 +95,12 @@ class Game {
     this.surface = new SurfaceFlight(this);
     this.eyes = new EyeAdaptation(this);
     this.storm = new SolarStorm(this);
+    this.heat = new Thermal(this);
+    this.aero = new Aero(this);
+    this.trajectory = new Trajectory(this);
+    this.ringField = new RingField(this, this.solarSystem.rockShapes, this.solarSystem.rockMaterials);
+    this.photo = new PhotoMode(this);
+    this.flightInfo = document.getElementById('hud-flightinfo');
     sfx.listener = this.camera;
 
     this.settings = { sensitivity: 1, invertY: false, music: true, musicVolume: 0.7, sound: true, ...loadSettings() };
@@ -120,8 +131,10 @@ class Game {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.15;
+    // Khronos Neutral keeps hues and saturation as lit (ACES bleaches bright colours towards white, AgX greys
+    // them): the planets, plasma and nebulae stay as colourful as they are
+    this.renderer.toneMapping = THREE.NeutralToneMapping;
+    this.renderer.toneMappingExposure = 1.25;
 
     // Post-processing: only HDR sources (sun, lasers, explosion cores) cross the bloom threshold
     this.composer = new EffectComposer(this.renderer);
@@ -323,6 +336,9 @@ class Game {
     controls.onPress('v', () => { if (this.flying()) this.ship.launchMissile(); });
     controls.onPress('rmb', () => { if (this.flying()) this.ship.launchMissile(); });
     controls.onPress('k', () => { if (this.flying()) this.ship.dropFlare(); });
+    controls.onPress('l', () => this.heat.vent());
+    controls.onPress('p', () => this.photo.toggle());
+    controls.onPress('enter', () => { if (this.photo.active) this.photo.wantShot = true; });
     controls.onPress('m', () => this.toggleAudio());
     controls.onPress('o', () => {
       this.settings.music = !this.settings.music;
@@ -349,7 +365,8 @@ class Game {
     controls.onPress('down', () => { if (this.ui.navMap.isOpen) this.ui.navMap.moveSelection(1); });
     controls.onPress('enter', () => { if (this.ui.navMap.isOpen) this.ui.navMap.warp(); });
     controls.onPress('escape', () => {
-      if (this.ui.difficultyOpen) this.ui.closeDifficulty();
+      if (this.photo.active) this.photo.exit();
+      else if (this.ui.difficultyOpen) this.ui.closeDifficulty();
       else if (this.ship.isDocked && this.ui.stationUI.isOpen) this.ui.stationUI.back();
       else this.ui.navMap.close(false);
     });
@@ -362,6 +379,7 @@ class Game {
 
     // Losing the mouse in flight (Esc, alt-tab) pauses the game
     controls.onLockChange = (locked) => {
+      if (!locked && this.photo.active) this.photo.exit();
       if (!locked && this.flying() && !this.ui.navMap.isOpen && !this.ui.pauseOpen) this.ui.openPause('log');
     };
 
@@ -404,6 +422,7 @@ class Game {
     }
     this.ship.isDocked = true;
     this.ship.dockedAt = st;
+    this.heat.reset();
     this.ship.autopilotActive = false;
     this.ship.velocity.set(0, 0, 0);
     this.home = st.def.blackMarket || st.def.faction === 'pirate' ? this.home : st.name;
@@ -510,6 +529,7 @@ class Game {
     document.getElementById('game-over-screen').classList.add('hidden');
     this.combat.clear();
     this.comm.clear();
+    this.heat.reset();
     this.loots.forEach((loot) => this.scene.remove(loot.group));
     this.loots = [];
     this.startNewCareer(difficulty);
@@ -819,7 +839,8 @@ class Game {
 
   tick() {
     requestAnimationFrame(this.tick.bind(this));
-    let delta = Math.min(this.clock.getDelta(), 0.1);
+    const frameTime = Math.min(this.clock.getDelta(), 0.1);
+    let delta = frameTime;
     if (this.paused) delta = 0;
 
     this.solarSystem.update(delta, this.ship ? this.ship.position : null);
@@ -841,6 +862,7 @@ class Game {
         }
       } else {
         this.ship.update(delta, this.solarSystem);
+        this.aero.update(delta);
         this.ship.updateCamera(this.camera, delta);
       }
       if (!this.warpState) {
@@ -858,7 +880,11 @@ class Game {
         if (!this.ship.isDocked) this.checkCollisions();
         this.encounters.update(delta);
         this.surface.updateApproach(delta);
+        this.ringField.update(delta, this.solarSystem.time);
       }
+      this.trajectory.update(delta);
+      this.heat.update(delta);
+      this.updateFlightInfo();
       this.missions.update(delta);
       this.law.update(delta);
       this.storm.update(delta);
@@ -891,16 +917,34 @@ class Game {
       this.camera.position.copy(earth.group.position).addScaledVector(dir, earth.radius * 2.3).addScaledVector(up, earth.radius * 0.45);
       const side = new THREE.Vector3().crossVectors(up, dir).normalize();
       this.camera.lookAt(earth.group.position.clone().addScaledVector(side, earth.radius * 0.55));
+    } else if (this.photo.active) {
+      this.photo.update(frameTime);
     } else {
       controls.clearDeltas();
     }
 
     if (this.surface.active) this.surface.prepareRender(this.camera, delta);
-    else this.solarSystem.updateView(this.camera);
+    else {
+      this.solarSystem.updateView(this.camera);
+      this.ringField.updateView(this.camera, this.renderer);
+    }
     this.eyes.update(delta);
     // Inside a station the painted interior covers the screen: no need to render space behind it
     if (!(this.ship.isDocked && this.ui.stationUI.isOpen)) this.composer.render(delta);
+    if (this.photo.active) this.photo.afterRender();
     if (this.simRunning && !this.surface.active) this.missileCam.render(delta);
+  }
+
+  // One line under the altimeter: what the air is doing to the ship, or where its free fall leads
+  updateFlightInfo() {
+    const el = this.flightInfo;
+    if (!el) return;
+    const ship = this.ship;
+    const text = ship.isDocked || ship.isDestroyed ? null : (!this.surface.active && this.aero.infoText()) || this.trajectory.info;
+    if (text === this.flightInfoShown) return;
+    this.flightInfoShown = text;
+    el.classList.toggle('hidden', !text);
+    if (text) el.textContent = text;
   }
 
   // 0 calm, ~0.4 hostiles around, 1 in a fight
@@ -968,6 +1012,18 @@ class Game {
           const planet = solarSystem.planets[st.planetIndex];
           this.bump(n, planet.velocity || ZERO, 20);
         }
+      }
+    }
+
+    for (const comet of solarSystem.comets.list) {
+      const offset = ship.position.clone().sub(comet.mesh.position);
+      const dist = offset.length();
+      const reach = comet.size * 0.95 + ship.radius;
+      if (dist < reach) {
+        const n = offset.divideScalar(dist || 1);
+        ship.position.copy(comet.mesh.position).addScaledVector(n, reach);
+        this.bump(n, comet.velocity, 20);
+        this.fx.rockHit(ship.position.clone().addScaledVector(n, -ship.radius), n);
       }
     }
 
@@ -1103,6 +1159,8 @@ class Game {
       const name = displayName(cause);
       const withArticle = ['Sonne', 'Erde', 'Venus'].includes(name) ? `der ${name}` : `dem ${name}`;
       deathText.innerText = `Dein Schiff ist mit ${withArticle} kollidiert und explodiert.`;
+    } else if (cause === 'Hitze') {
+      deathText.innerText = 'Die Radiatoren haben die Abwärme nicht mehr abgeführt: Dein Schiff ist überhitzt und ausgebrannt.';
     } else if (cause === 'Sonnensturm') {
       deathText.innerText = 'Die Strahlung des Sonnensturms hat Schilde, Hülle und Bordelektronik zerfressen.';
     } else {
@@ -1127,6 +1185,7 @@ class Game {
     this.surface.abort();
     ship.applyUpgrades();
     ship.fullRepair();
+    this.heat.reset();
     ship.fuel = Math.max(ship.fuel, 30);
     ship.throttle = 0.0;
     ship.isDestroyed = false;

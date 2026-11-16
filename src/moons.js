@@ -67,6 +67,17 @@ const IO_PLUMES = [
   { lat: 24.0, lonW: 115.0, height: 0.05, reach: 0.07, count: 1000, size: 0.006, color: [0.07, 0.075, 0.09] },    // Amirani
 ];
 
+// Enceladus: curtains of water ice rising from the four tiger stripes at the south pole, far higher than the moon is
+// wide by its own measure; most of it falls back as snow, the rest feeds Saturn's E ring
+const ENCELADUS_PLUMES = [
+  { lat: -84, lonW: 30, height: 1.3, reach: 0.5, count: 6000, size: 0.013, color: [0.045, 0.065, 0.1] },
+  { lat: -80, lonW: 120, height: 1.0, reach: 0.4, count: 4500, size: 0.012, color: [0.045, 0.065, 0.1] },
+  { lat: -82, lonW: 215, height: 1.15, reach: 0.45, count: 5000, size: 0.013, color: [0.045, 0.065, 0.1] },
+  { lat: -79, lonW: 300, height: 0.8, reach: 0.35, count: 3500, size: 0.011, color: [0.05, 0.065, 0.095] },
+];
+
+export const PLUME_SETS = { Io: IO_PLUMES, Enceladus: ENCELADUS_PLUMES };
+
 // The vent's direction in the moon's frame (same mapping as the baked maps: west longitudes towards +z)
 function ventDir(lat, lonW) {
   const la = THREE.MathUtils.degToRad(lat);
@@ -74,8 +85,8 @@ function ventDir(lat, lonW) {
   return new THREE.Vector3(Math.cos(la) * Math.cos(lo), Math.sin(la), Math.cos(la) * Math.sin(lo));
 }
 
-export class IoPlumes {
-  constructor(body) {
+export class Plumes {
+  constructor(body, list) {
     this.body = body;
     this.shared = {
       uTime: { value: 0 },
@@ -89,7 +100,7 @@ export class IoPlumes {
       seed = (seed * 16807) % 2147483647;
       return (seed - 1) / 2147483646;
     };
-    this.points = IO_PLUMES.map((pl) => {
+    this.points = list.map((pl) => {
       const seeds = new Float32Array(pl.count * 4);
       for (let i = 0; i < pl.count; i++) {
         // Most particles near full speed (the umbrella's edge), a few slower ones filling it in

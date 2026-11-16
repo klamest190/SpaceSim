@@ -21,7 +21,11 @@ const SURFACE_DEFINES = {
   Moon: { LUNA: '', HEIGHT_IN_ALPHA: '' },
   Io: { IO: '', HEIGHT_IN_ALPHA: '' },
   Europa: { EUROPA: '', HEIGHT_IN_ALPHA: '' },
-  Titan: { TITAN: '' }
+  Titan: { TITAN: '' },
+  Ganymede: { GANYMEDE: '', HEIGHT_IN_ALPHA: '' },
+  Callisto: { CALLISTO: '', HEIGHT_IN_ALPHA: '' },
+  Enceladus: { ENCELADUS: '', HEIGHT_IN_ALPHA: '' },
+  Triton: { TRITON: '', HEIGHT_IN_ALPHA: '' }
 };
 
 // Height range packed into the ground data of the bodies one can fly over (bake pass 2)
@@ -158,7 +162,7 @@ function band(r, from, to, soft) {
 }
 
 // Ring structure by distance from the planet centre (in planet radii): sRGB colour and optical density
-function saturnRing(r) {
+export function saturnRing(r) {
   const grain = 0.62 + 0.22 * noise1(r * 90) + 0.12 * noise1(r * 420) + 0.06 * noise1(r * 1700);
   let dens = 0;
   dens += band(r, 1.11, 1.236, 0.01) * 0.05;

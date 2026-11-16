@@ -15,6 +15,10 @@ const DE_NAMES = {
   Io: 'Io',
   Europa: 'Europa',
   Titan: 'Titan',
+  Ganymede: 'Ganymed',
+  Callisto: 'Kallisto',
+  Enceladus: 'Enceladus',
+  Triton: 'Triton',
 };
 STATION_DEFS.forEach((d) => { DE_NAMES[d.name] = d.short; });
 

@@ -273,7 +273,7 @@ export class Missions {
             r.spawned = wing.ships;
             g.comm.say('Na sieh mal an, ein Frachter ganz allein. Ladung oder Leben, Süßer!', { speaker: wing.leader.name, faction: 'pirate', seed: 301, urgent: true, duration: 4500 });
             g.comm.say('Flugleitung Mars: Piraten bei Ihnen! Taste R schaltet den nächsten Feind auf. Der Kreis zeigt, wohin Sie zielen müssen. Rechtsklick feuert eine Rakete: erst aufschalten, dann trifft sie sicher.', { speaker: 'Flugleitung Mars', faction: 'control', duration: 11000 });
-            g.comm.say('Solange Feinde so nah sind, blockiert ihre Waffensignatur den Sprung. Rakete auf Sie? K wirft Täuschkörper. Umschalt gibt Nachbrenner.', { speaker: 'Flugleitung Mars', faction: 'control', duration: 10000 });
+            g.comm.say('Solange Feinde so nah sind, blockiert ihre Waffensignatur den Sprung. Rakete auf Sie? K wirft Täuschkörper. Y oder Umschalt gibt Nachbrenner.', { speaker: 'Flugleitung Mars', faction: 'control', duration: 10000 });
           }
         },
       }];

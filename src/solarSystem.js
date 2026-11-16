@@ -6,8 +6,9 @@ import { rng } from './shipModel';
 import { buildRockShapes, makeRockMaterials, makeRock, dressField } from './asteroids';
 import { createSkySphere, galacticDir, equatorialToGame } from './sky';
 import { BSC_COUNT, BSC_DATA } from './starCatalog';
-import { IoPlumes } from './moons';
+import { Plumes, PLUME_SETS } from './moons';
 import { Aurorae } from './aurora';
+import { Comets } from './comets';
 
 // Orbits keep their true spacing (1 unit = 100.000 km); bodies are drawn far larger than true scale,
 // so a ship of 2 units is tiny beside them and planets read as worlds from afar.
@@ -288,6 +289,94 @@ export const MOON_DATA = [
       atmosphere: 'Stickstoff (95 %), Methan (5 %), anderthalbfacher Erddruck',
       funFact: 'Der einzige Mond mit dichter Lufthülle. Oranger Smog verhüllt Seen aus flüssigem Methan und Ethan, und es regnet Methan.'
     }
+  },
+  {
+    name: 'Ganymede',
+    parent: 'Jupiter',
+    realRadius: 2634.1,
+    radius: 64,
+    orbit: 2500,
+    period: 11600,
+    plane: 'equator',
+    incl: 0.2,
+    node: 3.3,
+    gravity: 0.38,
+    light: 1.0,
+    bump: 4,
+    texWidth: 2048,
+    umbraTint: [0.008, 0.003, 0.002],
+    details: {
+      mass: '1,48 × 10²³ kg (0,025 Erdmassen)',
+      temp: '-160 °C',
+      atmosphere: 'Hauchdünn, Sauerstoff',
+      funFact: 'Der größte Mond des Sonnensystems, größer als Merkur, und der einzige mit eigenem Magnetfeld. Dunkles Urgelände, durchzogen von hellen Furchenbändern.'
+    }
+  },
+  {
+    name: 'Callisto',
+    parent: 'Jupiter',
+    realRadius: 2410.3,
+    radius: 58,
+    orbit: 3500,
+    period: 27000,
+    plane: 'equator',
+    incl: 0.3,
+    node: 5.2,
+    gravity: 0.34,
+    light: 1.0,
+    bump: 5,
+    texWidth: 1024,
+    umbraTint: [0.008, 0.003, 0.002],
+    details: {
+      mass: '1,08 × 10²³ kg (0,018 Erdmassen)',
+      temp: '-139 °C',
+      atmosphere: 'Hauchdünn, Kohlendioxid',
+      funFact: 'Die am dichtesten verkraterte Oberfläche, die wir kennen: seit vier Milliarden Jahren unverändert. Das Einschlagbecken Valhalla misst 3.800 km.'
+    }
+  },
+  {
+    name: 'Enceladus',
+    parent: 'Saturn',
+    realRadius: 252.1,
+    radius: 24,
+    orbit: 1500,
+    period: 4200,
+    plane: 'equator',
+    incl: 0.02,
+    node: 1.0,
+    gravity: 0.12,
+    light: 1.05,
+    bump: 3,
+    texWidth: 1024,
+    umbraTint: [0.006, 0.003, 0.002],
+    details: {
+      mass: '1,08 × 10²⁰ kg',
+      temp: '-198 °C, an den Tigerstreifen bis -90 °C',
+      atmosphere: 'Wasserdampf über dem Südpol',
+      funFact: 'Aus vier Spalten am Südpol schießen Fontänen aus Wassereis hunderte Kilometer hoch, gespeist von einem Ozean unter dem Eis. Sie bilden Saturns E-Ring.'
+    }
+  },
+  {
+    name: 'Triton',
+    parent: 'Neptune',
+    realRadius: 1353.4,
+    radius: 44,
+    orbit: 900,
+    period: 5200,
+    plane: 'equator',
+    incl: 157, // it circles backwards: a captured dwarf planet from the Kuiper belt
+    node: 2.4,
+    gravity: 0.25,
+    light: 1.0,
+    bump: 3,
+    texWidth: 1024,
+    umbraTint: [0.004, 0.004, 0.006],
+    details: {
+      mass: '2,14 × 10²² kg',
+      temp: '-235 °C',
+      atmosphere: 'Hauchdünn, Stickstoff',
+      funFact: 'Umkreist Neptun rückwärts: ein eingefangener Zwergplanet aus dem Kuipergürtel. Rosa Stickstoffeis am Südpol, daraus brechen Geysire aus.'
+    }
   }
 ];
 
@@ -298,6 +387,7 @@ const FILL_TINT = {
   Mercury: 0x9a948c, Venus: 0xe0c89a, Earth: 0x8fb0e0, Mars: 0xc07850,
   Jupiter: 0xd8c0a0, Saturn: 0xe0d0a8, Uranus: 0xa8e0e8, Neptune: 0x6f8fe8,
   Moon: 0x9c9a94, Io: 0xd8c070, Europa: 0xd8d0c0, Titan: 0xd09040,
+  Ganymede: 0xa89c8c, Callisto: 0x6a5c4c, Enceladus: 0xf0f4f8, Triton: 0xc8b8b8,
 };
 
 // The stars: round soft points, sized and lit by magnitude; uGain is the eyes' adaptation. They never twinkle:
@@ -361,6 +451,39 @@ function starColor(kelvin, out) {
   return out.multiplyScalar(1 / max);
 }
 
+// The zodiacal light: sunlight scattered by the dust between the planets, a faint warm cone along the ecliptic
+// that brightens towards the Sun, with the gegenschein as a dim patch straight opposite it. Only dark-adapted
+// eyes see it, like the Milky Way.
+const ZODIACAL_VERTEX = /* glsl */ `
+#include <common>
+#include <logdepthbuf_pars_vertex>
+varying vec3 vDir;
+void main() {
+  vDir = normalize(position);
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  #include <logdepthbuf_vertex>
+}
+`;
+const ZODIACAL_FRAGMENT = /* glsl */ `
+#include <logdepthbuf_pars_fragment>
+uniform vec3 uSunDir;
+uniform float uGain;
+uniform float uDust;
+varying vec3 vDir;
+void main() {
+  #include <logdepthbuf_fragment>
+  vec3 d = normalize(vDir);
+  float elong = acos(clamp(dot(d, uSunDir), -1.0, 1.0));
+  float beta = abs(asin(clamp(d.y, -1.0, 1.0)));
+  float e = max(elong, 0.2);
+  float cone = 0.032 * pow(e, -2.1) * exp(-beta / (0.09 + 0.17 * e));
+  float band = 0.004 * exp(-beta / 0.22);
+  float anti = 3.14159265 - elong;
+  float gegenschein = 0.008 * exp(-(anti * anti) / 0.05) * exp(-(beta * beta) / 0.03);
+  gl_FragColor = vec4(vec3(1.0, 0.88, 0.72) * (cone + band + gegenschein) * uGain * uDust, 1.0);
+}
+`;
+
 const _off = new THREE.Vector3();
 const _vel = new THREE.Vector3();
 const _tint = new THREE.Color();
@@ -399,7 +522,6 @@ export class SolarSystem {
     this.renderer = renderer;
     this.time = 0;
     this.planets = [];
-    this.orbitLines = [];
     
     // Space Stations, Asteroids & Trade Ships
     this.stations = [];
@@ -457,6 +579,21 @@ export class SolarSystem {
     this.skyGroup.add(createSkySphere(this.renderer));
     this.createStarfield();
     this.createGalaxies();
+    this.zodiacal = new THREE.Mesh(
+      new THREE.SphereGeometry(100000, 48, 24),
+      new THREE.ShaderMaterial({
+        uniforms: { uSunDir: { value: new THREE.Vector3(1, 0, 0) }, uGain: { value: 1 }, uDust: { value: 1 } },
+        vertexShader: ZODIACAL_VERTEX,
+        fragmentShader: ZODIACAL_FRAGMENT,
+        side: THREE.BackSide,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      })
+    );
+    this.zodiacal.renderOrder = -6;
+    this.zodiacal.frustumCulled = false;
+    this.skyGroup.add(this.zodiacal);
     this.skyAdapt = 1;
     this.skyThrough = 1;
 
@@ -494,23 +631,6 @@ export class SolarSystem {
         orbitSpeed: data.orbitPeriod > 0 ? (2 * Math.PI) / (data.orbitPeriod * 2.5) : 0,
         currentPos: new THREE.Vector3()
       });
-
-      // Orbits are fixed circles: draw each once
-      let orbitLine = null;
-      if (index > 0) {
-        const r = data.realDist * DIST_SCALE;
-        const points = [];
-        for (let i = 0; i < 256; i++) {
-          const theta = (i / 256) * Math.PI * 2;
-          points.push(new THREE.Vector3(r * Math.cos(theta), 0, r * Math.sin(theta)));
-        }
-        orbitLine = new THREE.LineLoop(
-          new THREE.BufferGeometry().setFromPoints(points),
-          new THREE.LineBasicMaterial({ color: 0x00f0ff, transparent: true, opacity: 0.05, depthWrite: false })
-        );
-        this.scene.add(orbitLine);
-      }
-      this.orbitLines.push(orbitLine);
     });
 
     this.setupMoons();
@@ -520,6 +640,7 @@ export class SolarSystem {
   }
 
   setupMoons() {
+    this.plumes = [];
     MOON_DATA.forEach((data, k) => {
       const parent = this.planets.find((p) => p.name === data.parent);
       const body = new PlanetBody(this.renderer, data, 300 + k * 23.0);
@@ -552,23 +673,7 @@ export class SolarSystem {
       this.planets.push(moon);
       (parent.moons = parent.moons || []).push(moon);
 
-      // A faint orbit ring, carried along with the planet
-      const points = [];
-      for (let i = 0; i < 160; i++) {
-        const a = (i / 160) * Math.PI * 2;
-        points.push(new THREE.Vector3(data.orbit * Math.cos(a), 0, -data.orbit * Math.sin(a)));
-      }
-      moon.orbitLine = new THREE.LineLoop(
-        new THREE.BufferGeometry().setFromPoints(points),
-        new THREE.LineBasicMaterial({ color: 0x00f0ff, transparent: true, opacity: 0.05, depthWrite: false })
-      );
-      moon.orbitLine.quaternion.copy(plane);
-      this.scene.add(moon.orbitLine);
-
-      if (data.name === 'Io') {
-        this.ioPlumes = new IoPlumes(body);
-        this.ioMoon = moon;
-      }
+      if (PLUME_SETS[data.name]) this.plumes.push({ moon, plumes: new Plumes(body, PLUME_SETS[data.name]) });
     });
 
     // Who can eclipse whom: a planet's moons darken the planet, the planet and sibling moons darken a moon
@@ -589,7 +694,6 @@ export class SolarSystem {
     m.velocity.copy(m.parent.velocity).add(_vel);
     m.body.update(delta, this.time);
     m.body.mesh.rotation.y = m.angle + Math.PI;
-    m.orbitLine.position.copy(m.parent.group.position);
   }
 
   // The body whose gravity field holds a point: the nearest one within reach (a moon before its planet)
@@ -603,7 +707,12 @@ export class SolarSystem {
         bestDist = d;
       }
     });
-    return best;
+    return best || this.cometNear(pos);
+  }
+
+  // The comet close enough to fly formation with, if any
+  cometNear(pos, range = 700) {
+    return this.comets ? this.comets.nearest(pos, range) : null;
   }
 
   // The planet's day side as a lamp for its moon: brighter the closer it is and the more of its lit face the moon sees
@@ -633,9 +742,10 @@ export class SolarSystem {
     });
     this.planets.forEach(p => p.body.updateView(camera));
     this.aurorae.update(this.time, this.auroraStorm);
-    if (this.ioPlumes) {
-      this.ioPlumes.update(camera, this.time, this.renderer, this.sunVisibilityAt(this.ioMoon.group.position, this.ioMoon));
-    }
+    this.comets.updateView(camera, this.time, this.renderer);
+    this.plumes.forEach(({ moon, plumes }) => {
+      plumes.update(camera, this.time, this.renderer, this.sunVisibilityAt(moon.group.position, moon));
+    });
   }
 
   // Asteroid fields: dense clusters of real rocks to fly through and mine, plus a faint dust band marking the belt
@@ -646,6 +756,7 @@ export class SolarSystem {
     // Rock shapes with three levels of detail each, shared by all rocks; plain rock, ice-rich (worth ice) and
     // metal-rich (worth ore)
     const shapes = buildRockShapes(8);
+    this.rockShapes = shapes;
     this.rockMaterials = makeRockMaterials();
 
     let id = 0;
@@ -689,6 +800,9 @@ export class SolarSystem {
     geo.setAttribute('position', new THREE.BufferAttribute(pts, 3));
     this.beltDust = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0x8a7e70, size: 1.2, sizeAttenuation: false, transparent: true, opacity: 0.2, depthWrite: false }));
     this.scene.add(this.beltDust);
+
+    this.comets = new Comets(this, shapes, this.rockMaterials);
+    this.comets.update(0, this.time);
   }
 
   // A rock broken by mining: gone from the field (it grows back after a while somewhere out of sight)
@@ -1076,6 +1190,11 @@ export class SolarSystem {
     }
     if (shipPos) this.sunLight.target.position.copy(shipPos);
     if (shipPos) {
+      // The dust thins out away from the Sun
+      const zu = this.zodiacal.material.uniforms;
+      const sunDist = Math.max(shipPos.length(), 1);
+      zu.uSunDir.value.copy(shipPos).multiplyScalar(-1 / sunDist);
+      zu.uDust.value = THREE.MathUtils.clamp(1496 / sunDist, 0.25, 1.6);
       this.updateSunVisibility(shipPos);
       this.updateFillLight(shipPos);
     }
@@ -1124,6 +1243,8 @@ export class SolarSystem {
       if (delta > 0) st.visual.animate(delta);
     });
 
+    if (this.comets) this.comets.update(delta, this.time);
+
     // 3. Rocks hold their place in their field and tumble
     if (delta > 0) {
       this.asteroids.forEach(ast => {
@@ -1136,7 +1257,7 @@ export class SolarSystem {
 
   // T: everything worth flying to or shooting at, ordered by how close it is to the crosshair
   cycleTarget(currentSelection, ship, extra = []) {
-    const majorTargets = [...this.planets, ...this.stations.filter((s) => !s.hidden), ...extra];
+    const majorTargets = [...this.planets, ...this.stations.filter((s) => !s.hidden), ...this.comets.list, ...extra];
     if (majorTargets.length === 0) return null;
 
     if (ship) {
@@ -1173,6 +1294,7 @@ export class SolarSystem {
 
     this.planets.forEach(p => consider(p, p.group.position));
     this.stations.forEach(st => { if (!st.hidden) consider(st, st.mesh.position); });
+    this.comets.list.forEach(c => consider(c, c.mesh.position));
     ships.forEach(n => consider(n, n.pos, ship.sensorRange || 2200, 0.004));
     this.asteroids.forEach(ast => consider(ast, ast.mesh.position, 600));
 

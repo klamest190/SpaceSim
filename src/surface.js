@@ -6,6 +6,7 @@ import { FX } from './fx';
 import { spaceAudio } from './audio';
 import { sfx } from './sfx';
 import { displayName } from './names';
+import { SurfaceAurora } from './surfaceAurora';
 
 // Atmospheric flight. Diving deep enough into the atmosphere of a planet with a ground (Mercury, Venus,
 // Earth, Mars) hands over, behind the flash of re-entry, to a scene of its own: a plane of ground at the
@@ -195,6 +196,8 @@ export class SurfaceFlight {
     this.cloudPlane.visible = false;
     this.scene.add(this.cloudPlane);
 
+    this.aurora = new SurfaceAurora(this.scene);
+
     this.glowEl = document.getElementById('reentry-glow');
     this.flashEl = document.getElementById('atmo-flash');
     this.fogEl = document.getElementById('cloud-fog');
@@ -380,6 +383,7 @@ export class SurfaceFlight {
     game.renderPass.scene = game.scene;
     this.setWind(0, 0);
     if (this.fogEl) this.fogEl.style.opacity = '0';
+    this.aurora.hide();
   }
 
   // Fade the stars, galaxies and the baked Milky Way (1 = as in space)
@@ -661,6 +665,13 @@ export class SurfaceFlight {
     this.sun.target.position.copy(this.local.pos);
     this.terrain.update(camera, 3);
     this.updateCloudFog(camera);
+    if (this.planet.name === 'Earth') {
+      const dir = this.macros.Earth.direction(this.local.pos.x, this.local.pos.z);
+      const latitude = THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(dir.y, -1, 1)));
+      this.aurora.update(camera, delta, latitude, this.game.storm.aurora.Earth || 0, this.starVis ?? 0);
+    } else {
+      this.aurora.hide();
+    }
     if (ship.isDestroyed) this.setWind(0, 0);
   }
 
@@ -715,6 +726,8 @@ export class SurfaceFlight {
         break;
       }
     }
+    // The plasma itself is the air's doing (aero.js): its glow and its colour
+    heat = Math.max(heat, game.aero.heating);
     ship.shake = Math.max(ship.shake, heat * 0.22);
     if (this.glowEl) this.glowEl.style.opacity = heat.toFixed(3);
     this.setWind(wind, 0.6 + heat);

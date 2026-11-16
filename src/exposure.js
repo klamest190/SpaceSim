@@ -5,7 +5,7 @@ import * as THREE from 'three';
 // nothing lit in view, the Milky Way and its nebulae come out. Dazzle is quick, dark adaptation slow.
 // Drives the gain of the night sky (stars, Milky Way, galaxies) and nudges the overall exposure a little.
 
-const BASE_EXPOSURE = 1.15;
+const BASE_EXPOSURE = 1.25;
 const DARK_GAIN = 1.7;     // sky gain with nothing bright in view
 const DAZZLED_GAIN = 0.16; // with the Sun or a big sunlit disc filling the view
 const BRIGHTEN_RATE = 2.5; // per second, towards a smaller gain

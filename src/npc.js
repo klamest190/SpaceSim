@@ -390,7 +390,7 @@ export class NPC {
   launchMissile(target, fwd) {
     this.missiles--;
     this.missileCool = 14 + Math.random() * 12;
-    const down = new THREE.Vector3(0, -1, 0).applyQuaternion(this.quaternion);
+    const down = new THREE.Vector3(0, -1, 0).applyQuaternion(this.quat);
     const from = v3.copy(fwd).multiplyScalar(this.radius * 0.3).addScaledVector(down, this.radius * 0.5 + 0.4).add(this.pos);
     this.game.combat.fireMissile(this, from.clone(), fwd.clone(), target, { damage: 26 * this.level, profile: 'npc', eject: down });
     sfx.missileRelease(0, from);

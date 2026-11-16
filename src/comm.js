@@ -147,8 +147,18 @@ export class Comm {
         this.optionsEl.appendChild(b);
       });
     }
-    this.el.classList.remove('hidden');
+    this.el.classList.remove('idle');
     sfx.squelch();
+  }
+
+  // Nobody on the line: the monitor stays in the cockpit, dark and waiting
+  standby() {
+    this.el.classList.add('idle');
+    this.el.dataset.faction = 'control';
+    this.speakerEl.textContent = 'KEIN SIGNAL';
+    this.textEl.textContent = '';
+    this.optionsEl.replaceChildren();
+    this.portrait.getContext('2d').clearRect(0, 0, this.portrait.width, this.portrait.height);
   }
 
   get pendingQuestion() {
@@ -174,13 +184,13 @@ export class Comm {
     this.optionsEl.replaceChildren();
     const next = this.queue.shift();
     if (next) this.show(next);
-    else this.el.classList.add('hidden');
+    else this.standby();
   }
 
   clear() {
     this.queue = [];
     this.current = null;
-    this.el.classList.add('hidden');
+    this.standby();
   }
 
   update() {

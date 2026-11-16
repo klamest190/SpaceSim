@@ -18,9 +18,9 @@ const AIM_ASSIST = THREE.MathUtils.degToRad(2.6); // the guns gimbal this far on
 const SHIELD_DELAY = 3.0;      // seconds after a hit before shields recharge
 const STICK_RESPONSE = 13;     // how quickly the nose follows the mouse
 const STICK_LIMIT = 0.5;       // radians of steering the mouse can queue up
-const BOOST_DRAIN = 26;
+const BOOST_DRAIN = 12.5;    // a full tank burns for 8 seconds
 const BOOST_RECHARGE = 13;
-const BOOST_SPEED = 1.7;
+const BOOST_SPEED = 2.5;
 
 // Stations differ in size, so the distances around them follow: waiting point, docking range, closest approach
 export const stationHoldStandoff = (st) => st.size + 24;
@@ -472,6 +472,7 @@ export class Spaceship {
     // Cannot shoot if docked, warping, or destroyed
     if (controls.keys.shoot && this.fireCooldown <= 0 && this.weaponEnergy >= this.laserEnergyCost && !this.autopilotActive && !this.isDocked && !this.isWarping && !this.isDestroyed) {
       if (this.inAtmosphere) this.weaponsSafed();
+      else if (this.game.heat.overheated) this.weaponsHot();
       else this.fireLasers();
     }
 
@@ -493,9 +494,18 @@ export class Spaceship {
     this.game.hud.toast('Waffen gesichert: kein Feuer in der Atmosphäre', 'warn');
   }
 
+  weaponsHot() {
+    const now = performance.now();
+    if (now - (this.lastSafedNote || 0) < 2500) return;
+    this.lastSafedNote = now;
+    sfx.denied();
+    this.game.hud.toast('Laser überhitzt: abkühlen lassen oder L für Notkühlung', 'warn');
+  }
+
   fireLasers() {
     this.fireCooldown = this.fireRate / (0.4 + 0.6 * this.systems.weapons); // scales with upgrades, slows when damaged
     this.weaponEnergy -= this.laserEnergyCost;
+    this.game.heat.laserFired(this.laserEnergyCost);
     spaceAudio.playLaserFire();
 
     this.shootFlashActive = true;
@@ -524,7 +534,7 @@ export class Spaceship {
   }
 
   updateBoost(delta) {
-    const wants = controls.keys.boost && !this.autopilotActive && !this.isWarping && this.boost > 1;
+    const wants = controls.keys.boost && !this.autopilotActive && !this.isWarping && this.boost > 1 && !this.game.heat.overheated;
     this.boosting = wants && (this.boost > 12 || this.boosting);
     if (this.boosting) this.boost = Math.max(0, this.boost - BOOST_DRAIN * delta);
     else this.boost = Math.min(100, this.boost + BOOST_RECHARGE * delta);
@@ -700,6 +710,11 @@ export class Spaceship {
         this.frameVelocity.copy(p.velocity);
       }
     });
+    // Beside a comet the stabilizer rides along with it
+    if (best === Infinity) {
+      const comet = solarSystem.cometNear(this.position);
+      if (comet) this.frameVelocity.copy(comet.velocity);
+    }
   }
 
   handleAutopilot(delta, solarSystem) {
@@ -963,7 +978,7 @@ export class Spaceship {
       } else {
         // Flight Assist OFF
         if (Math.abs(this.throttle) > 0.01 || this.boosting) {
-          const push = this.boosting ? 2 : this.throttle;
+          const push = this.boosting ? 3 : this.throttle;
           const force = forward.clone().multiplyScalar(push * this.acceleration * (0.45 + 0.55 * this.systems.engine) * delta);
           this.velocity.add(force);
         }
@@ -1063,7 +1078,7 @@ export class Spaceship {
     }
 
     // Plumes, nozzle glow and nav lights
-    this.model.update(this.lastDelta || 0.016, soundThrottle, this.autopilotActive && !this.isHolding());
+    this.model.update(this.lastDelta || 0.016, soundThrottle, this.autopilotActive && !this.isHolding(), this.boosting);
   }
 
   updateCamera(camera, delta) {

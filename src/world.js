@@ -52,7 +52,7 @@ export const STATION_DEFS = [
     blurb: 'Methan und Rost über Titans orangem Smog, hinter den Ringen des Saturn. Hier fragt niemand zweimal.',
   },
   {
-    name: 'Triton-Posten', short: 'Triton-Posten', planetIndex: 8, orbit: 1.34, style: 'ring', size: 22, security: 0.12, blackMarket: true,
+    name: 'Triton-Posten', short: 'Triton-Posten', planetIndex: 8, moon: 'Triton', orbit: 2.1, style: 'ring', size: 22, security: 0.12, blackMarket: true,
     produces: { stims: 1.5 }, consumes: { arms: 1, food: 2.5, lux: 0.5, med: 1.5 },
     blurb: 'Letzter Halt vor dem Nichts. Der Zoll ist ein Gerücht.',
   },
