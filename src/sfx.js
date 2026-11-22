@@ -207,6 +207,34 @@ class SFX {
     this.tone(t, 'sine', 160, 90, 0.25, 0.05, { reverb: 0.2 });
   }
 
+  // On foot inside the ship: a boot on deck plating, a little different each step
+  footstep(run = false, glass = false) {
+    if (!this.ready) return;
+    const t = a.now;
+    const f = (glass ? 900 : 420) * (0.85 + Math.random() * 0.3);
+    this.burst(t, 'white', 'lowpass', f, 0.8, run ? 0.07 : 0.09, run ? 0.07 : 0.05, { reverb: 0.25, attack: 0.003 });
+    this.tone(t, 'sine', glass ? 260 : 120, glass ? 200 : 70, 0.08, run ? 0.05 : 0.035, { reverb: 0.2 });
+  }
+
+  // Harness buckles: two metallic clicks and a rustle
+  harness(open) {
+    if (!this.ready) return;
+    const t = a.now;
+    const [f0, f1] = open ? [2600, 1900] : [1900, 2600];
+    this.tone(t, 'square', f0, f0 * 0.9, 0.03, 0.04, { reverb: 0.15 });
+    this.tone(t + 0.09, 'square', f1, f1 * 0.9, 0.03, 0.04, { reverb: 0.15 });
+    this.burst(t + 0.02, 'pink', 'bandpass', 1800, 0.6, 0.35, 0.03, { reverb: 0.2, attack: 0.05 });
+  }
+
+  // The galley machine grinding and pouring
+  coffee() {
+    if (!this.ready) return;
+    const t = a.now;
+    this.burst(t, 'brown', 'bandpass', 300, 1.2, 1.1, 0.08, { reverb: 0.2, attack: 0.1 });
+    this.burst(t + 1.0, 'pink', 'bandpass', 1400, 2.0, 1.4, 0.05, { reverb: 0.25, attack: 0.15 });
+    this.tone(t + 2.5, 'sine', 1200, 1200, 0.12, 0.05, { reverb: 0.3 });
+  }
+
   squelch() {
     if (!this.ready) return;
     const t = a.now;

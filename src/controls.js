@@ -15,6 +15,12 @@ class Controls {
     };
     this.onLockChange = null;
 
+    // On foot inside the ship the same keys walk instead of fly: the ship sees no input at all
+    this.walkMode = false;
+    this.seatPrompt = false; // set by the game while "[E] Aufstehen" is offered
+    this.walk = { fwd: false, back: false, left: false, right: false, run: false, jump: false };
+    this.look = { x: 0, y: 0 };
+
     // Direct mouse movement deltas for 1:1 steering or free-look
     this.mouseDelta = {
       x: 0,
@@ -101,6 +107,7 @@ class Controls {
       this.pointerLocked = false;
       // Reset keyboard inputs when focus lost
       Object.keys(this.keys).forEach(k => this.keys[k] = false);
+      Object.keys(this.walk).forEach(k => this.walk[k] = false);
     }
     if (this.onLockChange) this.onLockChange(this.pointerLocked);
   }
@@ -124,7 +131,54 @@ class Controls {
     this.keys.boost = this.boostKeys.size > 0;
   }
 
+  setWalkMode(on) {
+    if (this.walkMode === on) return;
+    this.walkMode = on;
+    Object.keys(this.keys).forEach((k) => { this.keys[k] = false; });
+    Object.keys(this.walk).forEach((k) => { this.walk[k] = false; });
+    if (this.boostKeys) this.boostKeys.clear();
+    this.mouseDelta.x = this.mouseDelta.y = 0;
+    this.look.x = this.look.y = 0;
+    this.zoomDelta = 0;
+  }
+
+  // Walking keys; returns the press event to fire, if any. Only keys that make sense on foot fire.
+  walkKey(e, down) {
+    const w = this.walk;
+    switch (e.code) {
+      case 'KeyW': case 'ArrowUp': w.fwd = down; return null;
+      case 'KeyS': case 'ArrowDown': w.back = down; return null;
+      case 'KeyA': case 'ArrowLeft': w.left = down; return null;
+      case 'KeyD': case 'ArrowRight': w.right = down; return null;
+      case 'ShiftLeft': case 'ShiftRight': w.run = down; return null;
+      case 'Space': if (down && !e.repeat) w.jump = true; return null;
+      case 'KeyE': case 'KeyF': return down ? 'use' : null;
+      case 'KeyU': return down ? 'u' : null;
+      case 'KeyM': return down ? 'm' : null;
+      case 'KeyO': return down ? 'o' : null;
+      case 'KeyI': return down ? 'i' : null;
+      case 'KeyH': return down ? 'h' : null;
+      case 'Escape': return down ? 'escape' : null;
+      case 'Digit1': case 'Numpad1': return down ? '1' : null;
+      case 'Digit2': case 'Numpad2': return down ? '2' : null;
+      case 'Digit3': case 'Numpad3': return down ? '3' : null;
+      case 'Digit4': case 'Numpad4': return down ? '4' : null;
+    }
+    return null;
+  }
+
+  fire(keyTriggered, e) {
+    if (!keyTriggered) return;
+    if (e.repeat) return;
+    if (e.target && e.target.tagName === 'INPUT') return;
+    if (this.listeners[keyTriggered]) this.listeners[keyTriggered].forEach((cb) => cb());
+  }
+
   handleKeyDown(e) {
+    if (this.walkMode) {
+      this.fire(this.walkKey(e, true), e);
+      return;
+    }
     let keyTriggered = null;
     this.holdBoost(e, true);
 
@@ -155,7 +209,9 @@ class Controls {
         this.keys.strafeLeft = true;
         break;
       case 'KeyE':
-        this.keys.strafeRight = true;
+        // In the seat with the ship at rest, E gets you up (the prompt beside the sight says so); otherwise it strafes
+        if (this.seatPrompt && !e.repeat && !this.keys.strafeRight) keyTriggered = 'stand';
+        else this.keys.strafeRight = true;
         break;
 
       // Shooting Space
@@ -230,6 +286,9 @@ class Controls {
       case 'KeyP':
         keyTriggered = 'p';
         break;
+      case 'KeyU':
+        keyTriggered = 'u';
+        break;
 
       // Menu navigation (nav computer)
       case 'ArrowUp':
@@ -256,6 +315,10 @@ class Controls {
   }
 
   handleKeyUp(e) {
+    if (this.walkMode) {
+      this.walkKey(e, false);
+      return;
+    }
     switch (e.code) {
       case 'KeyW':
         this.keys.throttleUp = false;
@@ -288,6 +351,11 @@ class Controls {
   handleMouseMove(e) {
     if (!this.pointerLocked) return;
 
+    if (this.walkMode) {
+      this.look.x += e.movementX;
+      this.look.y += e.movementY;
+      return;
+    }
     // Track delta movement directly
     this.mouseDelta.x += e.movementX;
     this.mouseDelta.y += e.movementY;
@@ -295,6 +363,10 @@ class Controls {
 
   handleMouseDown(e) {
     if (!this.pointerLocked) return;
+    if (this.walkMode) {
+      if (e.button === 0 && this.listeners.use) this.listeners.use.forEach((cb) => cb());
+      return;
+    }
 
     if (e.button === 0) {
       this.keys.shoot = true; // Left click shoots
@@ -315,7 +387,7 @@ class Controls {
   }
 
   handleWheel(e) {
-    if (!this.pointerLocked) return;
+    if (!this.pointerLocked || this.walkMode) return;
     this.zoomDelta += e.deltaY;
   }
 
@@ -328,6 +400,8 @@ class Controls {
     this.mouseDelta.x = 0;
     this.mouseDelta.y = 0;
     this.zoomDelta = 0;
+    this.look.x = 0;
+    this.look.y = 0;
   }
 }
 

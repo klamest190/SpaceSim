@@ -20,7 +20,7 @@ const STICK_RESPONSE = 13;     // how quickly the nose follows the mouse
 const STICK_LIMIT = 0.5;       // radians of steering the mouse can queue up
 const BOOST_DRAIN = 12.5;    // a full tank burns for 8 seconds
 const BOOST_RECHARGE = 13;
-const BOOST_SPEED = 2.5;
+const BOOST_SPEED = 7.5;   // afterburner top speed, times the normal one
 
 // Stations differ in size, so the distances around them follow: waiting point, docking range, closest approach
 export const stationHoldStandoff = (st) => st.size + 24;
@@ -159,6 +159,7 @@ export class Spaceship {
     this.gravityFieldActive = false;
     this.atmosphereContact = 0; // seconds left on the warning after touching an atmosphere floor
     this.gravityPullDir = new THREE.Vector3();
+    this.gravityAccel = new THREE.Vector3(); // this frame's pull, felt by nobody aboard: free fall
     
     // Apply stats from current upgrades
     this.applyUpgrades();
@@ -907,6 +908,7 @@ export class Spaceship {
   // Newtonian Gravity fields math
   applyGravityPull(delta, solarSystem) {
     this.gravityFieldActive = false;
+    this.gravityAccel.set(0, 0, 0);
     
     // Autopilot and warp computers steer around gravity loops automatically; departure thrusters outpull it
     if (this.autopilotActive || this.isWarping || this.departureTime > 0) return;
@@ -923,6 +925,7 @@ export class Spaceship {
 
         // Surface gravity, falling off with the square of the distance
         const forceMag = p.data.gravity * (p.radius / dist) ** 2;
+        this.gravityAccel.addScaledVector(pullDir, forceMag);
         const gravityForce = pullDir.multiplyScalar(forceMag * delta);
         
         // Accumulate velocity pulling towards the planet!
@@ -978,7 +981,7 @@ export class Spaceship {
       } else {
         // Flight Assist OFF
         if (Math.abs(this.throttle) > 0.01 || this.boosting) {
-          const push = this.boosting ? 3 : this.throttle;
+          const push = this.boosting ? 9 : this.throttle;
           const force = forward.clone().multiplyScalar(push * this.acceleration * (0.45 + 0.55 * this.systems.engine) * delta);
           this.velocity.add(force);
         }

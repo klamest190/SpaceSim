@@ -32,6 +32,7 @@ import { Aero } from './aero';
 import { Trajectory } from './trajectory';
 import { RingField } from './ringField';
 import { PhotoMode } from './photo';
+import { OnFoot } from './onFoot';
 import './style.css';
 
 const AUTOSAVE_INTERVAL = 15; // seconds
@@ -100,6 +101,7 @@ class Game {
     this.trajectory = new Trajectory(this);
     this.ringField = new RingField(this, this.solarSystem.rockShapes, this.solarSystem.rockMaterials);
     this.photo = new PhotoMode(this);
+    this.onFoot = new OnFoot(this);
     this.flightInfo = document.getElementById('hud-flightinfo');
     sfx.listener = this.camera;
 
@@ -338,6 +340,10 @@ class Game {
     controls.onPress('k', () => { if (this.flying()) this.ship.dropFlare(); });
     controls.onPress('l', () => this.heat.vent());
     controls.onPress('p', () => this.photo.toggle());
+    // U: out of the seat and through the ship; E (or a click) uses what you look at
+    controls.onPress('u', () => this.onFoot.toggle());
+    controls.onPress('stand', () => { if (this.flying() && !this.onFoot.active) this.onFoot.standUp(); });
+    controls.onPress('use', () => this.onFoot.use());
     controls.onPress('enter', () => { if (this.photo.active) this.photo.wantShot = true; });
     controls.onPress('m', () => this.toggleAudio());
     controls.onPress('o', () => {
@@ -512,6 +518,7 @@ class Game {
   // A fresh career from the pause menu: everything back to the start, at the chosen difficulty
   newGame(difficulty) {
     const ship = this.ship;
+    this.onFoot.forceSit();
     this.surface.abort();
     if (ship.isDocked) {
       ship.isDocked = false;
@@ -851,6 +858,7 @@ class Game {
       if (!low) this.updateAimedTarget();
       if (low) {
         // Atmospheric flight: the ship flies and is filmed in local terms, then goes back to its point in space
+        if (this.onFoot.active) this.onFoot.forceSit('Atmosphäreneintritt: Du hechtest zurück in den Pilotensitz!');
         this.surface.beforeShip();
         this.ship.update(delta, null);
         this.surface.update(delta);
@@ -863,10 +871,12 @@ class Game {
       } else {
         this.ship.update(delta, this.solarSystem);
         this.aero.update(delta);
-        this.ship.updateCamera(this.camera, delta);
+        // Out of the seat the ship flies on by itself and the camera walks through it
+        if (this.onFoot.active) this.onFoot.update(delta);
+        else this.ship.updateCamera(this.camera, delta);
       }
       if (!this.warpState) {
-        const wantFov = 65 + (this.ship.boosting ? 7 : 0);
+        const wantFov = this.onFoot.active ? 72 : 65 + (this.ship.boosting ? 7 : 0);
         if (Math.abs(this.camera.fov - wantFov) > 0.05) {
           this.camera.fov += (wantFov - this.camera.fov) * Math.min(1, delta * 4);
           this.camera.updateProjectionMatrix();
@@ -896,6 +906,7 @@ class Game {
         this.updateLootCrates(delta);
       }
       this.comm.update();
+      this.onFoot.updateSeated();
       this.ui.update(this.ship, this.solarSystem, this.camera);
       this.hud.update(delta);
       this.ui.tutorial.update(this.ship, this.dockableStation);
@@ -1140,6 +1151,7 @@ class Game {
 
   triggerShipExplosion(cause) {
     if (this.ship.isDestroyed) return;
+    this.onFoot.forceSit();
     const ship = this.ship;
     ship.isDestroyed = true;
     ship.autopilotActive = false;

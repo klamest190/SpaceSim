@@ -3160,3 +3160,57 @@ body.photo-mode .photo-hint { display: block; }
 body.photo-mode #hud,
 body.photo-mode #sensor-hits,
 body.photo-mode #heat-glow { display: none !important; }
+
+/* ----- On foot inside the ship (onFoot.js): the cockpit instruments fade, a slim phosphor HUD remains ----- */
+.walk-hud { display: none; position: absolute; inset: 0; pointer-events: none; z-index: 12; }
+body.on-foot .walk-hud { display: block; }
+body.on-foot #cockpit-layer,
+body.on-foot .cockpit-visor { opacity: 0; visibility: hidden; }
+body.on-foot #external-hud,
+body.on-foot #ext-aim,
+body.on-foot .combat-layer,
+body.on-foot .status-strip,
+body.on-foot #target-reticle,
+body.on-foot #passive-markers-container,
+body.on-foot #hud-travel-prompt,
+body.on-foot #hud-dock-prompt,
+body.on-foot #hud-gravity-alert,
+body.on-foot #hud-altitude,
+body.on-foot #hud-flightinfo { display: none !important; }
+body.on-foot .comm-bezel.idle { display: none; }
+.walk-dot {
+  position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px;
+  border-radius: 50%; background: rgba(200, 255, 220, 0.75); box-shadow: 0 0 4px rgba(120, 255, 170, 0.6);
+}
+.walk-room, .walk-prompt, .walk-hint {
+  position: absolute; font-family: var(--font-vdu, 'VT323', monospace); letter-spacing: 0.06em;
+  color: #9dffc4; text-shadow: 0 0 6px rgba(80, 255, 150, 0.45);
+}
+.walk-room { left: 22px; top: 18px; font-size: 1.25rem; padding: 2px 10px; background: rgba(0, 12, 6, 0.45); border-left: 3px solid #b8741f; }
+.walk-room.alert { color: #ff6a55; text-shadow: 0 0 8px rgba(255, 60, 40, 0.6); border-left-color: #ff3a2a; animation: walk-blink 0.8s steps(2) infinite; }
+@keyframes walk-blink { 50% { opacity: 0.55; } }
+.walk-prompt {
+  left: 50%; top: calc(50% + 34px); transform: translateX(-50%); white-space: nowrap; font-size: 1.3rem;
+  padding: 3px 14px; background: rgba(0, 12, 6, 0.55); border: 1px solid rgba(125, 255, 176, 0.35);
+}
+.walk-prompt.hidden { display: none; }
+.walk-hint {
+  left: 50%; bottom: 22px; transform: translateX(-50%); white-space: nowrap; font-size: 1.05rem;
+  padding: 3px 12px; background: rgba(0, 12, 6, 0.4); color: rgba(157, 255, 196, 0.8); transition: opacity 1.2s ease;
+}
+.walk-hint.faded { opacity: 0; }
+
+/* Seated: "[E] Aufstehen" beside the sight, as an interaction prompt */
+.stand-prompt {
+  position: absolute; top: calc(40% - 12px); left: calc(50% + 96px); z-index: 12; pointer-events: none;
+  display: flex; align-items: center; gap: 8px; white-space: nowrap;
+  font-family: var(--font-vdu, 'VT323', monospace); font-size: 1.3rem; letter-spacing: 0.06em;
+  color: #9dffc4; text-shadow: 0 0 6px rgba(80, 255, 150, 0.45);
+  padding: 2px 12px 2px 4px; background: rgba(0, 12, 6, 0.5); border-left: 3px solid #b8741f;
+}
+.stand-prompt .key {
+  display: inline-block; min-width: 1.3em; padding: 0 4px; text-align: center; color: #0b1a10;
+  background: #9dffc4; box-shadow: 0 0 6px rgba(80, 255, 150, 0.5); border-radius: 2px;
+}
+.stand-prompt.dim { opacity: 0.45; font-size: 1.05rem; }
+.stand-prompt.hidden, body.on-foot .stand-prompt { display: none; }
