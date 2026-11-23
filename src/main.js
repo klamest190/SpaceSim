@@ -33,6 +33,11 @@ import { Trajectory } from './trajectory';
 import { RingField } from './ringField';
 import { PhotoMode } from './photo';
 import { OnFoot } from './onFoot';
+import { Story, FACTIONS } from './story';
+import { Crew } from './crew';
+import { Rival } from './rival';
+import { Journal } from './journal';
+import { Radio } from './radio';
 import './style.css';
 
 const AUTOSAVE_INTERVAL = 15; // seconds
@@ -83,6 +88,7 @@ class Game {
     this.solarSystem = new SolarSystem(this.scene, this.renderer);
     this.ship = new Spaceship(this.scene, this.renderer);
     this.ship.game = this;
+    this.story = new Story(this);
     this.fx = new FX(this.scene);
     this.combat = new Combat(this);
     this.npcs = new NPCManager(this);
@@ -102,6 +108,9 @@ class Game {
     this.ringField = new RingField(this, this.solarSystem.rockShapes, this.solarSystem.rockMaterials);
     this.photo = new PhotoMode(this);
     this.onFoot = new OnFoot(this);
+    this.crew = new Crew(this);
+    this.rival = new Rival(this);
+    this.radio = new Radio(this);
     this.flightInfo = document.getElementById('hud-flightinfo');
     sfx.listener = this.camera;
 
@@ -116,6 +125,7 @@ class Game {
     this.placeShipAtHome();
 
     this.ui = new UI(this);
+    this.journal = new Journal(this);
     this.setupControlBinds();
 
     window.addEventListener('resize', this.onWindowResize.bind(this), false);
@@ -152,6 +162,7 @@ class Game {
   applySave(save) {
     const ship = this.ship;
     this.difficulty = DIFFICULTIES[save.difficulty] ? save.difficulty : 'normal';
+    this.story.load(save.story);
     if (typeof save.credits === 'number') ship.credits = save.credits;
     ship.cargo = { ...emptyCargo(), ...(save.cargo || {}) };
     if (save.upgrades) Object.assign(ship.upgrades, save.upgrades);
@@ -166,6 +177,9 @@ class Game {
     this.law.load(save.law);
     this.economy.load(save.economy);
     this.missions.load(save.missions);
+    this.crew.load(save.crew);
+    this.rival.load(save.rival);
+    this.radio.load(save.radio);
     (save.discovered || []).forEach((n) => this.discover(n, true));
     if (save.home && this.solarSystem.stations.some((s) => s.name === save.home)) this.home = save.home;
   }
@@ -177,6 +191,7 @@ class Game {
       hull: ship.hull, systems: ship.systems, fuel: ship.fuel, missiles: ship.missiles, flares: ship.flares, debt: ship.debt,
       law: this.law.toSave(), economy: this.economy.toSave(), missions: this.missions.toSave(),
       discovered: [...this.discovered], home: this.home, difficulty: this.difficulty,
+      story: this.story.toSave(), crew: this.crew.toSave(), rival: this.rival.toSave(), radio: this.radio.toSave(),
     });
   }
 
@@ -198,7 +213,12 @@ class Game {
     ship.flares = d.fullAmmo ? ship.maxFlares : 4;
     this.law.reset();
     this.economy.reset();
+    this.story.reset();
     this.missions.reset();
+    this.crew.reset();
+    this.rival.reset();
+    this.radio.reset();
+    ship.applyUpgrades();
     this.encounters.reset();
     this.npcs.clearAll();
     this.discovered.clear();
@@ -311,17 +331,11 @@ class Game {
       }
     });
 
-    // J: the current mission's destination
-    controls.onPress('j', () => {
-      if (!this.flying()) return;
-      const dest = this.missions.destination();
-      if (dest) {
-        this.setTarget(dest);
-        spaceAudio.playBeep();
-      } else {
-        sfx.denied();
-      }
-    });
+    // Z: hail the targeted ship
+    controls.onPress('z', () => this.radio.hail());
+
+    // J: the journal, where every quest and its place is a keypress away
+    controls.onPress('j', () => this.journal.toggle());
 
     controls.onPress('f', () => {
       if (!this.flying()) return;
@@ -371,13 +385,15 @@ class Game {
     controls.onPress('down', () => { if (this.ui.navMap.isOpen) this.ui.navMap.moveSelection(1); });
     controls.onPress('enter', () => { if (this.ui.navMap.isOpen) this.ui.navMap.warp(); });
     controls.onPress('escape', () => {
-      if (this.photo.active) this.photo.exit();
+      if (this.journal.isOpen) this.journal.close();
+      else if (this.photo.active) this.photo.exit();
       else if (this.ui.difficultyOpen) this.ui.closeDifficulty();
       else if (this.ship.isDocked && this.ui.stationUI.isOpen) this.ui.stationUI.back();
       else this.ui.navMap.close(false);
     });
     ['1', '2', '3', '4'].forEach((key, i) => controls.onPress(key, () => {
       if (this.ui.difficultyOpen) { if (i < 3) this.ui.chooseDifficulty(['easy', 'normal', 'hard'][i]); return; }
+      if (this.journal.isOpen) return;
       if (!this.simRunning || this.paused) return;
       if (this.ship.isDocked && this.ui.stationUI.isOpen) this.ui.stationUI.answer(i);
       else this.comm.answer(i);
@@ -411,7 +427,14 @@ class Game {
   // Why this station won't take us right now, or null
   dockRefusal(st) {
     const { law } = this;
-    if (st.def.faction === 'pirate' && law.piratesHostile() && this.missions.storyStep < 5) return 'Der Aschebund lässt dich nicht an Bord. Erst muss man dir dort vertrauen.';
+    const { story, missions } = this;
+    const welcomeAtNest = story.path === 'asche' || !!story.ending || missions.done.includes('nest');
+    if (st.def.faction === 'pirate' && law.piratesHostile() && !welcomeAtNest) return 'Der Aschebund lässt dich nicht an Bord. Erst muss man dir dort vertrauen.';
+    // Those who run a station can shut it to a pilot they hate (never in the middle of the story)
+    const owner = st.def.owner;
+    if (owner && owner !== 'police' && owner !== 'pirate' && (law.rep[owner] || 0) <= -75 && !missions.active.some((m) => m.type === 'story' || m.type === 'side')) {
+      return `Andocken verweigert. Die ${FACTIONS[owner].name} will dich hier nicht sehen.`;
+    }
     if (!st.def.blackMarket && st.def.faction !== 'pirate' && law.wanted >= 2) return `Andocken verweigert: Sie werden gesucht. Bußgelder: ${law.fines.toLocaleString('de-DE')} Cr. Ein Mittelsmann auf dem Triton-Posten kann das regeln.`;
     if (this.npcs.ships.some((n) => n.guns && n.target === this.ship && n.mode === 'attack' && n.pos.distanceTo(this.ship.position) < 350)) return 'Andockklammern gesperrt: Feindkontakt in unmittelbarer Nähe.';
     return null;
@@ -435,6 +458,7 @@ class Game {
     this.combat.clear();
     this.comm.clear();
     this.ui.openSpaceport(st.name);
+    this.crew.onDock();
     this.ui.tutorial.onDocked();
     this.saveProgress();
     document.exitPointerLock();
@@ -455,6 +479,11 @@ class Game {
       this.ship.velocity.copy(planet.velocity || ZERO).addScaledVector(out, 8);
       this.ship.throttle = 0;
       this.ship.targetObject = null;
+    }
+    // A course set in the journal while docked
+    if (this.pendingTarget) {
+      this.setTarget(this.pendingTarget);
+      this.pendingTarget = null;
     }
     this.saveProgress();
     controls.requestLock();
@@ -512,7 +541,7 @@ class Game {
   warpCost(dist) {
     const d = difficultyOf(this);
     if (d.freeWarp) return 0;
-    return Math.ceil((1.5 + dist / 1600) * (d.warpCostMult || 1));
+    return Math.ceil((1.5 + dist / 1600) * (d.warpCostMult || 1) * this.crew.warpMult());
   }
 
   // A fresh career from the pause menu: everything back to the start, at the chosen difficulty
@@ -896,6 +925,9 @@ class Game {
       this.heat.update(delta);
       this.updateFlightInfo();
       this.missions.update(delta);
+      this.crew.update(delta);
+      this.rival.update(delta);
+      this.radio.update(delta);
       this.law.update(delta);
       this.storm.update(delta);
       this.economy.update(delta);
@@ -1103,6 +1135,8 @@ class Game {
     this.combat.nearRocks = this.combat.nearRocks.filter((r) => r !== rock);
     if (this.ship.targetObject === rock) this.ship.targetObject = null;
     if (owner !== this.ship) return;
+    this.story.stats.mined++;
+    this.story.gain('technik', 5);
     const chunks = THREE.MathUtils.clamp(Math.round(rock.size / 5), 1, 5);
     for (let i = 0; i < chunks; i++) {
       const good = rock.rockKind === 'ice' ? 'ice' : rock.rockKind === 'ore' ? 'ore' : Math.random() < 0.6 ? 'ore' : 'ice';
@@ -1135,6 +1169,7 @@ class Game {
     } else {
       this.missions.onKill(npc);
     }
+    this.radio.onKill(npc, killer);
     // Some of what it carried survives
     if (byPlayer || Math.random() < 0.5) {
       npc.lootGoods().forEach((good) => {

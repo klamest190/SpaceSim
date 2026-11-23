@@ -1,3 +1,5 @@
+import { SKILLS, SKILL_KEYS, FACTIONS, FACTION_KEYS, ENDINGS } from './story';
+import { CREW_DEFS } from './crew';
 import { spaceAudio } from './audio';
 import * as THREE from 'three';
 import { displayName } from './names';
@@ -14,18 +16,19 @@ const PROMPT_KEYS = {
   travel: ['[X] Hinfliegen', '[T] Nächstes Ziel'],
   hold: ['[W] Heranfliegen', '[S] Zurück', '[X] Loslassen'],
   besideStation: ['[X] Andockposition', '[T] Nächstes Ziel'],
-  combat: ['[R] Nächster Feind', '[Rechtsklick] Rakete', '[K] Täuschkörper'],
+  combat: ['[R] Nächster Feind', '[Rechtsklick] Rakete', '[K] Täuschkörper', '[Z] Funk'],
+  ship: ['[Z] Anfunken', '[X] Hinfliegen', '[T] Nächstes Ziel'],
 };
 
-const FACTION_LABEL = { pirate: 'ASCHEBUND', police: 'SOLPOL', civil: 'ZIVIL' };
+const FACTION_LABEL = { pirate: 'ASCHEBUND', police: 'SOLPOL', civil: 'ZIVIL', rogue: 'FALSCHE SOLPOL' };
 
 // Game units -> readable distance (arcade scale: 1 unit = 100.000 km)
 // What kind of thing is locked, for the target VDU
 function targetKind(target, game) {
   if (target.kind === 'npc') {
     const hostile = game.npcs.isHostile(target, game.ship);
-    const bounty = target.faction === 'pirate' && target.bounty ? ` · ${target.bounty.toLocaleString('de-DE')} Cr` : '';
-    return `${FACTION_LABEL[target.faction] || ''} ${target.spec.label.toUpperCase()}${hostile ? ' · FEIND' : ''}${bounty}`;
+    const bounty = (target.faction === 'pirate' || target.faction === 'rogue') && target.bounty ? ` · ${target.bounty.toLocaleString('de-DE')} Cr` : '';
+    return `${target.ally ? 'VERBÜNDET · ' : ''}${FACTION_LABEL[target.faction] || ''} ${target.spec.label.toUpperCase()}${hostile ? ' · FEIND' : ''}${bounty}`;
   }
   if (target.kind === 'waypoint') return 'NAVPUNKT';
   if (target.kind === 'comet') return target.activity > 0.05 ? 'KOMET · AKTIV' : 'KOMET · RUHEND';
@@ -315,6 +318,12 @@ export class UI {
       const b = e.target.closest('[data-pact]');
       if (!b) return;
       const [act, id] = b.dataset.pact.split(':');
+      if (act === 'fire') {
+        this.game.crew.fire(id);
+        spaceAudio.playBeep();
+        this.renderPause();
+        return;
+      }
       const m = this.game.missions.active.find((x) => String(x.id) === id);
       if (!m) return;
       if (act === 'track') {
@@ -388,14 +397,11 @@ export class UI {
     const fmt = (n) => Math.round(n).toLocaleString('de-DE');
     const rank = law.rank();
     const next = law.nextRank();
-    const bar = (v) => `<span class="rep-bar"><i style="left:${50 + v / 2}%"></i></span>`;
     document.getElementById('pause-record').innerHTML = `<h3 class="section">Pilot</h3>
       <p>Rang <b>${rank.name}</b>${next ? ` <span class="dim">(${law.points} / ${next.points} bis ${next.name})</span>` : ''}</p>
       <p>Schwierigkeit <b>${difficultyOf(this.game).label}</b></p>
       <p>Konto <b>${fmt(ship.credits)} Cr</b> · Schulden <b>${fmt(ship.debt)} Cr</b></p>
       <p>Status <b class="${law.wanted >= 2 ? 'alarm' : ''}">${law.wantedLabel()}</b>${law.fines ? ` · Bußgeld ${fmt(law.fines)} Cr` : ''}</p>
-      <p>SOLPOL ${bar(law.rep.police)} ${law.repText(law.rep.police)}</p>
-      <p>Aschebund ${bar(law.rep.pirate)} ${law.repText(law.rep.pirate)}</p>
       <p class="dim">Abschüsse: ${law.kills.pirate} Piraten · ${law.kills.police} Polizei · ${law.kills.civil} Zivil</p>
       <p class="dim">Hülle ${Math.round((ship.hull / ship.maxHull) * 100)}% · ${Object.entries(ship.systems).map(([k, c]) => `${SUBSYSTEMS[k]} ${Math.round(c * 100)}%`).join(' · ')}</p>`;
     const list = missions.active.map((m) => {
@@ -403,7 +409,54 @@ export class UI {
       return `<div class="mission-active ${missions.tracked === m ? 'tracked' : ''}"><span><b>${m.title}</b><br>${obj ? obj.label : ''} · ${fmt(m.reward)} Cr</span>
         <span><button class="shop-action-btn" data-pact="track:${m.id}">Verfolgen</button><button class="shop-action-btn sell" data-pact="abort:${m.id}">Abbrechen</button></span></div>`;
     }).join('') || '<p class="dim">Keine Aufträge. Angebote gibt es im Auftragsbüro jeder Station, manchmal auch in der Bar.</p>';
-    document.getElementById('pause-missions').innerHTML = `<h3 class="section">Aufträge</h3>${list}`;
+    const hints = missions.storyHints();
+    const nextHint = hints.length ? `<p class="story-hint">${hints.length > 1 ? 'Am Scheideweg' : 'Hauptgeschichte'}: <b>${hints.join('</b> oder <b>')}</b></p>` : '';
+    document.getElementById('pause-missions').innerHTML = `<h3 class="section">Aufträge</h3>${nextHint}${list}`;
+    this.renderStoryLog();
+  }
+
+  renderStoryLog() {
+    const { story, law, crew, missions } = this.game;
+    const bar = (v) => `<span class="rep-bar"><i style="left:${50 + v / 2}%"></i></span>`;
+    const skills = SKILL_KEYS.map((k) => {
+      const p = story.progress(k);
+      const help = crew.skillBonus(k);
+      return `<div class="skill-row" title="${SKILLS[k].text}"><span>${SKILLS[k].name}</span><span class="pips">${'■'.repeat(p.lvl)}${'□'.repeat(5 - p.lvl)}</span>${help ? `<em>+${help} Crew</em>` : ''}<span class="xp"><i style="width:${Math.round(p.frac * 100)}%"></i></span></div>`;
+    }).join('');
+    const epithet = story.epithet();
+    document.getElementById('pause-skills').innerHTML = `<h3 class="section">Fähigkeiten</h3>${skills}<p class="dim">${epithet ? `Man nennt dich: <b>${epithet}</b>` : 'Fähigkeiten wachsen mit dem, was du tust.'}</p>`;
+    document.getElementById('pause-powers').innerHTML = `<h3 class="section">Mächte</h3>${FACTION_KEYS.map((f) => `<p>${FACTIONS[f].short} ${bar(law.rep[f] || 0)} ${law.repText(law.rep[f] || 0)}</p>`).join('')}`;
+    const members = crew.list().map((id) => {
+      const def = CREW_DEFS[id];
+      const l = crew.loyalty(id);
+      return `<div class="crew-row"><span><b>${def.name}</b> · ${def.title}<br><small class="dim">${def.bonus}</small></span><span class="loyal ${l < 30 ? 'low' : ''}">Loyalität ${Math.round(l)}<button class="shop-action-btn sell" data-pact="fire:${id}">Entlassen</button></span></div>`;
+    }).join('') || '<p class="dim">Niemand an Bord. In den Bars mancher Stationen sucht jemand Arbeit.</p>';
+    document.getElementById('pause-crew').innerHTML = `<h3 class="section">Crew</h3>${members}<p class="dim">U steht auf, E spricht mit der Crew an Bord.</p>`;
+    const entries = story.journal.slice(0, 14).map((e) => `<li class="${e.kind}">${e.text}</li>`).join('') || '<li>Noch nichts Erzählenswertes.</li>';
+    document.getElementById('pause-chronicle').innerHTML = `<h3 class="section">Chronik${story.ending ? ` · Ende: ${ENDINGS[story.ending].title}` : ''}</h3><ul class="chronicle">${entries}</ul>`;
+  }
+
+  // The story is over: the epilogue, then free flight with the world as the pilot left it
+  showEnding(id) {
+    const { story, law, ship } = this.game;
+    const e = ENDINGS[id];
+    if (!e) return;
+    const el = document.getElementById('ending-screen');
+    document.getElementById('ending-title').textContent = e.title;
+    document.getElementById('ending-text').textContent = e.text;
+    document.getElementById('ending-epilogue').innerHTML = story.epilogue().map((l) => `<li>${l}</li>`).join('');
+    const fmt = (n) => Math.round(n).toLocaleString('de-DE');
+    document.getElementById('ending-stats').textContent = `Rang ${law.rank().name} · ${law.kills.pirate} Piraten · ${fmt(ship.credits)} Cr · ${story.stats.spared} Mal Gnade gezeigt`;
+    el.classList.remove('hidden');
+    this.game.paused = true;
+    document.exitPointerLock();
+    const btn = document.getElementById('ending-btn');
+    btn.onclick = () => {
+      el.classList.add('hidden');
+      this.game.paused = false;
+      this.game.clock.getDelta();
+      if (!this.game.ship.isDocked) controls.requestLock();
+    };
   }
 
   createPassiveMarkers() {
@@ -821,6 +874,7 @@ export class UI {
       const targetPos = target ? (target.group ? target.group.position : target.mesh.position) : null;
       if (fighting) keys = PROMPT_KEYS.combat;
       else if (!target) keys = null;
+      else if (target.kind === 'npc' && targetPos.distanceTo(ship.position) < 2500) keys = PROMPT_KEYS.ship;
       else if (ship.stationHold) keys = PROMPT_KEYS.hold;
       else if (ship.autopilotActive) keys = null; // still closing in on the hold point
       else if (this.game.isBesideTargetStation()) keys = PROMPT_KEYS.besideStation;

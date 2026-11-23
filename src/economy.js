@@ -82,12 +82,23 @@ export class Economy {
     return GOODS[good].base * factor * this.eventMult(stationName, good);
   }
 
+  // The pilot's haggling and standing with the station's owners shift the quote a little either way
+  terms(stationName) {
+    const story = this.game.story;
+    if (!story) return { buy: 1, sell: 1 };
+    const def = this.defFor(stationName);
+    const standing = story.standingMult(def && def.owner);
+    return { buy: story.buyMult() * standing, sell: story.sellMult() / standing };
+  }
+
   buyPrice(stationName, good, stockDelta = 0) {
-    return Math.max(1, Math.round(this.mid(stationName, good, stockDelta) * (1 + SPREAD)));
+    return Math.max(1, Math.round(this.mid(stationName, good, stockDelta) * (1 + SPREAD) * this.terms(stationName).buy));
   }
 
   sellPrice(stationName, good, stockDelta = 0) {
-    return Math.max(1, Math.round(this.mid(stationName, good, stockDelta) * (1 - SPREAD)));
+    // Never above the buying price: no money from thin air
+    const sell = this.mid(stationName, good, stockDelta) * (1 - SPREAD) * this.terms(stationName).sell;
+    return Math.max(1, Math.min(Math.round(sell), this.buyPrice(stationName, good, stockDelta) - 1));
   }
 
   available(stationName, good) {
@@ -122,6 +133,7 @@ export class Economy {
       total += price;
       moved++;
     }
+    if (moved && this.game.story) this.game.story.gain('handel', Math.round(total / 90));
     return { total, moved };
   }
 

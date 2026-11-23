@@ -114,17 +114,20 @@
           <li><span>K</span> Täuschkörper</li>
           <li><span>R</span> Nächster Feind</li>
           <li><span>T</span> Nächstes Ziel</li>
-          <li><span>J</span> Auftragsziel</li>
+          <li><span>J</span> Journal: Hauptgeschichte, Aufträge, Crew · Kurs setzen mit Zahl oder Klick</li>
           <li><span>B halten</span> Traktorstrahl</li>
           <li><span>X</span> Sprung zum Ziel</li>
           <li><span>N</span> Navkarte</li>
           <li><span>G</span> Andocken / Ablegen</li>
-          <li><span>1 2 3</span> Funk beantworten</li>
+          <li><span>1 2 3 4</span> Funk beantworten</li>
+          <li><span>Z</span> Aufgeschaltetes Schiff anfunken: Piraten, Polizei, Frachter · Piraten lassen mit sich reden</li>
           <li><span>I / Esc</span> Logbuch &amp; Pause</li>
           <li><span>F</span> Stabilisator (aus: freier Fall, die Bahnvorschau zeigt, wohin)</li>
           <li><span>L</span> Notkühlung: 1 t Eis verdampfen</li>
           <li><span>P</span> Fotomodus</li>
           <li><span>E · U</span> Aufstehen (E bei Schub 0 oder Autopilot, U jederzeit) und durchs Schiff gehen: WASD, Shift, Leertaste, E benutzen · das Schiff fliegt ohne dich weiter</li>
+          <li><span>Crew</span> In den Bars mancher Stationen sucht jemand Arbeit · an Bord aufstehen und mit E ansprechen</li>
+          <li><span>Story</span> Leute mit Aufträgen warten in Bar und Revier · Antworten in [eckigen Klammern] brauchen Fähigkeiten · Logbuch (I) zeigt Chronik, Fähigkeiten, Mächte, Crew</li>
           <li><span>C · Mausrad</span> Cockpit / Außen</li>
           <li><span>Mittlere Maustaste</span> Umschauen</li>
           <li><span>M · O</span> Ton · Musik</li>
@@ -347,6 +350,38 @@
     <div id="warp-flash"></div>
 
     <!-- Game Over Screen Overlay -->
+    <!-- Journal (J): what there is to do, and where -->
+    <div id="journal-screen" class="overlay hidden">
+      <div class="bezel pause-bezel journal-bezel">
+        <div class="plate-label">Journal · J</div>
+        <div class="vdu pause-terminal journal-terminal">
+          <div class="terminal-header">
+            <h2>JOURNAL</h2>
+            <div class="pause-actions"><button id="journal-close" class="metal-btn primary">Schließen [J]</button></div>
+          </div>
+          <p class="dim journal-help">Zahl oder Klick setzt den Kurs, danach springt X hin.</p>
+          <div id="journal-body" class="journal-body"></div>
+        </div>
+        <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
+      </div>
+    </div>
+
+    <!-- The end of the story: an epilogue, then free flight -->
+    <div id="ending-screen" class="overlay hidden">
+      <div class="bezel ending-bezel">
+        <div class="plate-label">Epilog</div>
+        <div class="vdu ending-vdu">
+          <p class="ending-kicker">ENDE</p>
+          <h1 class="logo" id="ending-title">Recht und Ordnung</h1>
+          <p id="ending-text"></p>
+          <ul id="ending-epilogue"></ul>
+          <p id="ending-stats" class="dim"></p>
+          <button id="ending-btn" class="metal-btn primary">Weiterfliegen · Freiflug</button>
+        </div>
+        <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>
+      </div>
+    </div>
+
     <div id="game-over-screen" class="overlay hidden">
       <div class="bezel death-bezel">
         <div class="plate-label">Notsystem</div>
@@ -400,6 +435,12 @@
               <label class="setting">Musiklautstärke <input type="range" id="set-music-vol" min="0" max="1" step="0.05"></label>
               <p class="dim pause-hint">Esc oder I öffnet das Logbuch, H das Flughandbuch.</p>
             </section>
+          </div>
+          <div class="pause-story">
+            <section class="pause-col" id="pause-skills"></section>
+            <section class="pause-col" id="pause-powers"></section>
+            <section class="pause-col" id="pause-crew"></section>
+            <section class="pause-col pause-chronicle" id="pause-chronicle"></section>
           </div>
         </div>
         <span class="rivet tl"></span><span class="rivet tr"></span><span class="rivet bl"></span><span class="rivet br"></span>

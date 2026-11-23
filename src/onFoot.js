@@ -114,18 +114,20 @@ export class OnFoot {
     const g = this.game;
     const ship = g.ship;
     let state = null;
-    if (!this.active && !this.blockedReason() && !g.ui.pauseOpen && !g.ui.difficultyOpen) {
-      const danger = ship.incomingMissiles > 0 || g.hostilesNear(ship.sensorRange * 0.6);
-      if (!danger) state = ship.autopilotActive || (Math.abs(ship.throttle) < 0.01 && !ship.boosting) ? 'ready' : 'moving';
+    if (!this.active && !this.blockedReason() && !g.ui.pauseOpen && !g.ui.difficultyOpen && !(g.journal && g.journal.isOpen)) {
+      const danger = ship.incomingMissiles > 0 || g.hostilesNear(ship.sensorRange * 0.6) || !!g.encounters.hail;
+      state = danger ? 'danger' : ship.autopilotActive || (Math.abs(ship.throttle) < 0.01 && !ship.boosting) ? 'ready' : 'moving';
     }
     controls.seatPrompt = state === 'ready';
     if (state === this.standState) return;
     this.standState = state;
     this.standEl.classList.toggle('hidden', !state);
-    this.standEl.classList.toggle('dim', state === 'moving');
+    this.standEl.classList.toggle('danger', state === 'danger');
+    // E only gets you up at rest (in flight it strafes); U always does
     this.standEl.innerHTML = state === 'ready'
       ? '<span class="key">E</span>Aufstehen'
-      : state === 'moving' ? 'Schub auf 0 · dann <span class="key">E</span>Aufstehen' : '';
+      : state === 'moving' ? '<span class="key">U</span>Aufstehen <small>· E bei Schub 0</small>'
+        : state === 'danger' ? '<span class="key">U</span>Aufstehen <small>· Feinde in der Nähe!</small>' : '';
   }
 
   // ----- getting up and sitting down -------------------------------------------------------------
@@ -431,6 +433,7 @@ export class OnFoot {
     const ship = g.ship;
     const id = this.focus.id;
     if (id === 'seat') { this.sit(); return; }
+    if (id.startsWith('crew:')) { g.crew.talk(id.slice(5)); return; }
     if (id.startsWith('window:')) { g.hud.toast(this.describeView(id.slice(7)), 'info'); return; }
     if (id === 'coffee') {
       if (this.coffee > 0) return;

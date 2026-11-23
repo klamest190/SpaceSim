@@ -6,6 +6,9 @@ import { drawPortrait } from './comm';
 import { rng } from './shipModel';
 import { difficultyOf } from './difficulty';
 import { W, H, buildRoom, drawPerson, drawFace, makePerson, hashStr, BAR_NAMES } from './concourse';
+import { CHAPTERS, VARGA } from './storyline';
+import { SKILLS, FACTIONS, FACTION_KEYS } from './story';
+import { CREW_DEFS, CREW_KEYS } from './crew';
 
 // Docked: you walk through the station. A lobby with doors to the bar, the exchange, the workshop, the mission office,
 // the authorities (or a fixer) and the landing deck. Each room is a painted scene with people you can talk to;
@@ -216,20 +219,29 @@ export class StationUI {
     const { missions, economy, discovered } = this.game;
     const name = this.station.name;
     const clock = economy.clock || 0;
-    const story = missions.storyOffer(name);
+    const { crew, story: chronicle } = this.game;
+    const stories = missions.storyOffers(name);
     const offers = missions.offersAt(name).filter((m) => !m.story);
-    const key = `${name}:${Math.floor(clock / CAST_PERIOD)}:${story ? story.id : ''}:${offers.length}:${discovered.has('Hades-Nest')}`;
+    const recruits = CREW_KEYS.filter((id) => crew.canHire(id, name));
+    const varga = this.vargaState();
+    const key = `${name}:${Math.floor(clock / CAST_PERIOD)}:${stories.map((o) => o.id).join(',')}:${offers.length}:${discovered.has('Hades-Nest')}:${recruits.join(',')}:${varga}`;
     if (key === this.patronsKey) return this.patronList;
     this.patronsKey = key;
     const r = rng(hashStr(key));
     const list = [];
     const person = (kind, seed, faction, extra = {}) => ({ id: `${kind}${seed}`, kind, seed, faction, name: nameFor(seed, faction === 'pirate'), spec: makePerson(seed, { faction }), ...extra });
 
-    if (story) {
-      const p = { id: `story${story.id}`, kind: 'story', seed: story.seed, faction: story.giverFaction, name: story.giver, title: 'Hauptauftrag', spec: makePerson(story.seed, { faction: story.giverFaction }), offer: story };
-      p.room = story.giverFaction === 'police' ? 'office' : 'bar';
+    stories.forEach((story) => {
+      const p = { id: `story${story.id}`, kind: 'story', seed: story.seed, faction: story.giverFaction, name: story.giver, title: story.choice ? 'Wartet auf dich' : 'Hauptauftrag', spec: makePerson(story.seed, { faction: story.giverFaction }), offer: story, chapter: story.chapter };
+      p.room = story.room || (story.giverFaction === 'police' ? 'office' : 'bar');
       list.push(p);
-    }
+    });
+    if (varga) list.push({ id: `varga${varga}`, kind: 'varga', seed: VARGA.seed, faction: 'civil', name: 'Dr. Ilse Varga', title: 'Xenoforschung', spec: makePerson(VARGA.seed, { faction: 'civil' }), room: 'bar', state: varga });
+    recruits.forEach((id) => {
+      const def = CREW_DEFS[id];
+      list.push({ id: `recruit${id}`, kind: 'recruit', crewId: id, seed: def.seed, faction: def.faction, name: def.name, title: def.title, spec: makePerson(def.seed, { faction: def.faction }), room: 'bar' });
+    });
+    void chronicle;
     if (offers.length) {
       const m = offers[Math.floor(r() * offers.length)];
       const seed = Math.floor(r() * 100000);
@@ -247,7 +259,8 @@ export class StationUI {
     const seats = ['seat2', 'seat1', 'stand1', 'stand2'];
     list.filter((p) => !p.room || p.room === 'bar').forEach((p) => { p.room = 'bar'; });
     const inBar = list.filter((p) => p.room === 'bar');
-    inBar.sort((a, b) => (a.kind === 'story' ? -1 : b.kind === 'story' ? 1 : 0));
+    const rank = (p) => ({ story: 0, varga: 1, recruit: 2, contact: 3, scarred: 4 }[p.kind] ?? 5);
+    inBar.sort((a, b) => rank(a) - rank(b));
     inBar.forEach((p, i) => { p.slot = seats[i]; });
     list.filter((p) => p.room === 'office').forEach((p) => { p.slot = 'visitor'; });
     this.patronList = list.filter((p) => p.slot);
@@ -298,13 +311,14 @@ export class StationUI {
     this.barks.replaceChildren();
     this.closeDialog();
     const people = this.peopleHere();
-    const visitor = people.find((p) => p.npc.kind === 'story');
+    const visitor = people.find((p) => p.npc.kind === 'story' && p.npc.room === 'office');
     const panel = PANEL_OF[room];
     if (panel && !visitor) this.openPanel(panel);
     else this.closePanel();
     // The person in charge says hello
     const host = people.find((p) => !p.npc.kind);
-    if (visitor) this.bark(visitor, 'Da bist du ja! Wir müssen reden.');
+    const waiting = people.find((p) => p.npc.kind === 'story');
+    if (waiting) this.bark(waiting, waiting.npc.offer && waiting.npc.offer.choice ? 'Hast du einen Moment? Hör mich an.' : 'Da bist du ja! Wir müssen reden.');
     else if (host && room !== 'lobby') this.bark(host, this.greeting(host.npc));
     this.renderNav();
     this.updateCaption();
@@ -314,7 +328,11 @@ export class StationUI {
     const { ship, economy, law, missions } = this.game;
     const name = this.station.name;
     switch (npc.role) {
-      case 'bartender': return this.pirate ? `Im ${BAR_NAMES[this.def.name]} zahlt man vorher.` : `Willkommen im ${BAR_NAMES[this.def.name]}!`;
+      case 'bartender': {
+        const epithet = this.game.story.epithet();
+        if (epithet) return `Sieh an, der ${epithet}! Willkommen im ${BAR_NAMES[this.def.name]}.`;
+        return this.pirate ? `Im ${BAR_NAMES[this.def.name]} zahlt man vorher.` : `Willkommen im ${BAR_NAMES[this.def.name]}!`;
+      }
       case 'trader': {
         const ev = economy.events.find((e) => e.station === name);
         return ev ? ev.text : 'Kauf billig, verkauf teuer. Mehr gibt es nicht zu wissen.';
@@ -500,7 +518,7 @@ export class StationUI {
   updateCaption() {
     if (this.hover) { this.caption.textContent = this.hover.label; this.caption.classList.add('hot'); return; }
     this.caption.classList.remove('hot');
-    const story = this.patrons().find((p) => p.kind === 'story');
+    const story = this.patrons().find((p) => p.kind === 'story' && p.room !== this.room);
     const where = { lobby: 'Lobby', bar: `Bar · ${BAR_NAMES[this.def.name]}`, exchange: 'Handelsbörse', workshop: 'Werkstatt', missions: this.pirate ? 'Auftragsbrett' : 'Auftragsbüro', office: this.pirate ? 'Mittelsmann' : 'SOLPOL-Revier', hangar: 'Landedeck' }[this.room];
     this.caption.textContent = story && this.room !== story.room
       ? `${where} · ${story.name} erwartet dich ${story.room === 'office' ? 'im SOLPOL-Revier' : 'in der Bar'}.`
@@ -510,8 +528,8 @@ export class StationUI {
   renderNav() {
     const offers = this.game.missions.offersAt(this.station.name).length;
     const label = { lobby: 'Lobby', bar: 'Bar', exchange: 'Börse', workshop: 'Werkstatt', missions: `Aufträge${offers ? ` (${offers})` : ''}`, office: this.pirate ? 'Kontor' : 'SOLPOL', hangar: 'Deck' };
-    const story = this.patrons().find((p) => p.kind === 'story');
-    this.nav.innerHTML = ROOMS.map((r) => `<button class="tab-btn ${r === this.room ? 'active' : ''} ${story && story.room === r ? 'alert' : ''}" data-room="${r}">${label[r]}</button>`).join('');
+    const waiting = this.patrons().filter((p) => p.kind === 'story' || p.kind === 'varga');
+    this.nav.innerHTML = ROOMS.map((r) => `<button class="tab-btn ${r === this.room ? 'active' : ''} ${waiting.some((p) => p.room === r) ? 'alert' : ''}" data-room="${r}">${label[r]}</button>`).join('');
     this.credits.textContent = fmt(this.game.ship.credits);
   }
 
@@ -623,6 +641,7 @@ export class StationUI {
           { label: `Einen Drink (${price} Cr)`, disabled: ship.credits < price ? 'Zu wenig Geld' : null, run: () => {
             ship.credits -= price;
             sfx.coin();
+            if ((this.drinks = (this.drinks || 0) + 1) <= 3) this.game.story.gain('reden', 4);
             const rumor = RUMORS[Math.floor(Math.random() * RUMORS.length)];
             this.say(npc, `Bitte schön. Und weil du so nett fragst: ${rumor}`, [more(menu), bye]);
           } },
@@ -655,18 +674,16 @@ export class StationUI {
         ]);
         break;
       case 'story': {
-        const offer = this.game.missions.storyOffer(name);
+        const offer = this.game.missions.storyOffers(name).find((o) => o.chapter === npc.chapter);
         if (!offer) { this.say(npc, 'Worauf wartest du noch?'); break; }
-        const blocker = this.game.missions.blocker(offer);
-        this.say(npc, offer.text, [
-          { label: `Ich übernehme das (${fmt(offer.reward)} Cr)`, disabled: blocker, run: () => {
-            if (!this.game.missions.accept(offer, name)) { sfx.denied(); return; }
-            this.game.hud.toast(`Hauptauftrag angenommen: ${offer.title}`, 'info');
-            this.gone = this.gone || new Set();
-            this.say(npc, 'Gut. Ich verlasse mich auf dich. Viel Glück da draußen.', [{ label: 'Bis dann.', run: () => { this.gone.add(npc.id); this.closeDialog(); } }]);
-          } },
-          { label: 'Später.', run: () => this.closeDialog() },
-        ]);
+        this.runTree(npc, this.chapterTree(offer), 'start', offer);
+        break;
+      }
+      case 'recruit': this.runTree(npc, this.recruitTree(npc, npc.crewId)); break;
+      case 'varga': {
+        const offer = npc.state === 'offer' ? this.game.missions.sideOffer('sonde') : null;
+        if (npc.state === 'offer' && !offer) { this.say(npc, 'Fliegen Sie vorsichtig da draußen.'); break; }
+        this.runTree(npc, this.vargaTree(npc, offer), 'start', offer);
         break;
       }
       case 'contact': {
@@ -698,11 +715,146 @@ export class StationUI {
         ]);
         break;
       }
-      case 'pilot': this.say(npc, `Du fliegst die SOL 4471? ${RUMORS[npc.seed % RUMORS.length]}`); break;
+      case 'pilot': {
+        const gossip = this.game.story.gossip(npc.seed);
+        this.say(npc, gossip && npc.seed % 3 !== 0 ? `Du fliegst die SOL 4471? ${gossip}` : `Du fliegst die SOL 4471? ${RUMORS[npc.seed % RUMORS.length]}`);
+        break;
+      }
       case 'tipster': this.say(npc, this.tradeTip().replace(/^Händlerin am Tresen: /, '')); break;
-      case 'veteran': this.say(npc, LORE[npc.seed % LORE.length], [{ label: 'Erzähl mehr.', run: () => this.say(npc, LORE[(npc.seed + 1 + Math.floor(Math.random() * 5)) % LORE.length]) }, bye]); break;
+      case 'veteran': this.say(npc, LORE[npc.seed % LORE.length], [{ label: 'Erzähl mehr.', run: () => this.say(npc, LORE[(npc.seed + 1 + Math.floor(Math.random() * 5)) % LORE.length]) }, { label: 'Was erzählt man sich so?', run: () => this.say(npc, this.game.story.gossip(npc.seed + 7) || 'Nichts, was du nicht schon weißt.') }, bye]); break;
       default: this.say(npc, 'Hallo.');
     }
+  }
+
+  // ----- dialogue trees ---------------------------------------------------------------------------
+  // A node: { text, options: [{ label, need: [skill, level], if, hint, disabled, run, go, accept, close }] }.
+  // Skill checks show the skill in front of the answer and stay greyed out until the pilot (with the crew) is good enough.
+
+  runTree(npc, tree, id = 'start', offer = null) {
+    const node = tree[id];
+    if (!node) { this.closeDialog(); return; }
+    const { story, missions } = this.game;
+    const name = this.station.name;
+    const options = node.options.filter((o) => !o.if || o.if()).map((o) => {
+      let label = o.label;
+      let disabled = o.disabled || null;
+      if (o.need) {
+        const [skill, lvl] = o.need;
+        label = `[${SKILLS[skill].name} ${lvl}] ${label}`;
+        if (!story.check(skill, lvl)) disabled = `${SKILLS[skill].name} ${lvl} nötig`;
+      }
+      if (o.accept && offer) {
+        disabled = disabled || missions.blocker(offer);
+        if (o.hint) label += ` · ${o.hint}`;
+      } else if (o.hint) label += ` · ${o.hint}`;
+      return {
+        label, disabled,
+        run: () => {
+          if (o.need) story.gain('reden', 15);
+          if (o.run) o.run();
+          if (o.accept && offer) { this.acceptOffer(npc, offer, name); return; }
+          if (o.close) { this.closeDialog(); return; }
+          if (o.go) { this.runTree(npc, tree, o.go, offer); return; }
+          if (!o.run) this.closeDialog();
+        },
+      };
+    });
+    const text = typeof node.text === 'function' ? node.text() : node.text;
+    this.say(npc, text, options);
+  }
+
+  chapterTree(offer) {
+    const ch = CHAPTERS[offer.chapter];
+    const g = this.game;
+    const finish = (endingId) => {
+      g.missions.finishTalk(offer.chapter);
+      this.closeDialog();
+      this.gone = this.gone || new Set();
+      g.story.finish(endingId);
+    };
+    if (ch.talk) return ch.talk({ offer, g, finish });
+    return { start: { text: offer.text, options: [{ label: `Ich übernehme das (${fmt(offer.reward)} Cr)`, accept: true }, { label: 'Später.', close: true }] } };
+  }
+
+  acceptOffer(npc, offer, name) {
+    const g = this.game;
+    if (!g.missions.accept(offer, name)) { sfx.denied(); return; }
+    g.hud.toast(`${offer.story ? 'Hauptauftrag' : 'Auftrag'} angenommen: ${offer.title}`, 'info');
+    this.gone = this.gone || new Set();
+    const line = offer.choice ? 'Dann ist es entschieden. Wir sehen uns da draußen.' : 'Gut. Ich verlasse mich auf dich. Viel Glück da draußen.';
+    this.say(npc, line, [{ label: 'Bis dann.', run: () => { this.gone.add(npc.id); this.closeDialog(); this.patronsKey = null; this.renderNav(); } }]);
+  }
+
+  recruitTree(npc, id) {
+    const def = CREW_DEFS[id];
+    const g = this.game;
+    const hire = {
+      label: def.cost ? `Anheuern (${fmt(def.cost)} Cr)` : 'Komm an Bord.',
+      disabled: g.ship.credits < def.cost ? 'Zu wenig Geld' : null,
+      run: () => {
+        if (!g.crew.hire(id)) { sfx.denied(); return; }
+        sfx.coin();
+        this.gone = this.gone || new Set();
+        this.say(npc, id === 'jo' ? 'Abgemacht, Käpt\'n. Ich bring mein Werkzeug an Bord. Du findest mich im Maschinenraum.' : id === 'teo' ? 'Abgemacht. Sie finden mich auf der Brücke, Kapitän.' : 'Danke. Ich setze mich in die Messe und störe nicht.', [{ label: 'Willkommen an Bord.', run: () => { this.gone.add(npc.id); this.closeDialog(); this.patronsKey = null; } }]);
+      },
+    };
+    return {
+      start: { text: def.pitch, options: [hire, { label: 'Was bringst du mit?', go: 'bonus' }, { label: 'Erzähl mir von dir.', go: 'back' }, { label: 'Nein danke.', close: true }] },
+      bonus: { text: def.bonus, options: [hire, { label: 'Erzähl mir von dir.', go: 'back' }, { label: 'Nein danke.', close: true }] },
+      back: { text: def.back[0], options: [hire, { label: 'Was bringst du mit?', go: 'bonus' }, { label: 'Nein danke.', close: true }] },
+    };
+  }
+
+  // Dr. Varga in the Europa bar: 'offer' while the signal quest is open, 'result' once the probe's core is here
+  vargaState() {
+    if (!this.station || this.station.name !== 'Europa-Station') return null;
+    const { missions, story } = this.game;
+    if (story.has('signal_kern') && !story.has('signal_entschieden')) return 'result';
+    const ready = missions.done.includes('uniformen') || story.has('kranich_log');
+    if (ready && missions.sideOffer('sonde')) return 'offer';
+    return null;
+  }
+
+  vargaTree(npc, offer) {
+    const g = this.game;
+    const { story, missions } = g;
+    if (npc.state === 'result') {
+      const decide = (flag, text, credits, rep) => () => {
+        story.set('signal_entschieden');
+        story.set(flag);
+        g.ship.credits += credits;
+        story.changeRep(rep);
+        if (credits) { sfx.coin(); g.hud.toast(`+${fmt(credits)} Cr`, 'gain'); }
+        this.gone = this.gone || new Set();
+        this.say(npc, text, [{ label: 'Leben Sie wohl, Doktor.', run: () => { this.gone.add(npc.id); this.closeDialog(); this.patronsKey = null; } }]);
+        g.saveProgress();
+      };
+      return {
+        start: {
+          text: 'Ich habe den Speicherkern ausgelesen. Die AURORA-7 hat zwanzig Jahre lang etwas aufgezeichnet, das von weit hinter dem Kuipergürtel kommt. Es ist strukturiert. Es wiederholt sich. Und es enthält, ganz am Anfang, eine Folge von Primzahlen. Unsere eigene. Die, die wir 1974 von Arecibo gesendet haben.',
+          options: [{ label: 'Eine Antwort?', go: 'antwort' }],
+        },
+        antwort: {
+          text: 'Oder ein Echo. Oder etwas, das wir noch nicht verstehen. Die Frage ist: Wem gehört es? Ich will es veröffentlichen, für alle. Die Kreditbank hat mir heute früh 30.000 Credits geboten, damit es in ihrem Tresor verschwindet. Ihnen, nehme ich an, auch.',
+          options: [
+            { label: 'Veröffentlichen Sie es. Das gehört allen.', run: decide('signal_offen', 'Danke. Sie werden in den Fußnoten stehen, versprochen. Ganz oben.', 8000, { europa: 30, bank: -10 }) },
+            { label: 'Ich behalte eine Kopie. Sie bekommen das Original.', need: ['technik', 3], run: () => { story.set('signal_kopie'); story.gain('technik', 40); decide('signal_offen', 'Sie haben eine Kopie gezogen, während wir geredet haben? Respekt. Passen Sie gut darauf auf.', 8000, { europa: 25 })(); } },
+            { label: 'Die Bank zahlt 30.000. Ich verkaufe.', run: () => {
+              decide('signal_verkauft', 'Dann gehen Sie. Und erzählen Sie mir nie, was die Bank damit gemacht hat.', 30000, { europa: -35, bank: 20 })();
+              if (g.crew.has('teo')) g.crew.adjust('teo', -25, 'Sie verkaufen das an die Bank? Die Leute, die meine Mannschaft umgebracht haben?');
+            } },
+          ],
+        },
+      };
+    }
+    void missions;
+    const intro = story.has('kranich_log')
+      ? 'Sie haben das Logbuch der Kranich? Dann wissen Sie, dass hinter Neptun etwas sendet. Ich höre es seit Jahren, schwach, alle 41 Stunden.'
+      : 'Sie sind Pilot? Ich suche jemanden, der weit fliegt und wenig fragt. Hinter Neptun sendet etwas, schwach und regelmäßig, alle 41 Stunden.';
+    return {
+      start: { text: intro, options: [{ label: 'Was soll ich tun?', go: 'offer' }, { label: 'Kein Interesse.', close: true }] },
+      offer: { text: offer.text, options: [{ label: `Ich fliege hin (${fmt(offer.reward)} Cr)`, accept: true }, { label: 'Später.', close: true }] },
+    };
   }
 
   tradeTip() {
@@ -820,8 +972,9 @@ export class StationUI {
       return `<div class="upgrade-card"><h4>${u.name}</h4><p>${u.text}</p><div class="upgrade-info">Stufe <span>${tier}</span> von 4 <span class="pips">${'■'.repeat(tier)}${'□'.repeat(4 - tier)}</span></div>${btn}</div>`;
     }).join('');
 
-    const hullCost = Math.round((ship.maxHull - ship.hull) * HULL_REPAIR_PRICE);
-    const sysCost = Math.round(Object.values(ship.systems).reduce((s, c) => s + (1 - c) * 100, 0) * SYSTEM_REPAIR_PRICE);
+    const tech = this.game.story.repairMult();
+    const hullCost = Math.round((ship.maxHull - ship.hull) * HULL_REPAIR_PRICE * tech);
+    const sysCost = Math.round(Object.values(ship.systems).reduce((s, c) => s + (1 - c) * 100, 0) * SYSTEM_REPAIR_PRICE * tech);
     const repair = hullCost + sysCost;
     const fuelCost = Math.round((ship.maxFuel - ship.fuel) * FUEL_PRICE);
     const sys = Object.entries(ship.systems).map(([k, c]) => `<span class="sys ${c < 0.35 ? 'bad' : c < 0.75 ? 'warn' : ''}">${SUBSYSTEMS[k]} ${Math.round(c * 100)}%</span>`).join('');
@@ -862,7 +1015,7 @@ export class StationUI {
   bar() {
     const { economy, law } = this.game;
     const news = economy.news.slice(0, 6).map((n) => `<li>${n}</li>`).join('') || '<li>Keine Meldungen.</li>';
-    const standing = `Ruf bei SOLPOL: <b>${law.repText(law.rep.police)}</b> · beim Aschebund: <b>${law.repText(law.rep.pirate)}</b>`;
+    const standing = FACTION_KEYS.map((f) => `${FACTIONS[f].name}: <b>${law.repText(law.rep[f] || 0)}</b>`).join(' · ');
     return `<div class="bar-view">
       <div class="bar-col"><h3 class="section">Meldungen</h3><ul class="news">${news}</ul></div>
       <div class="bar-col"><h3 class="section">Dein Ruf</h3><p class="dim">${standing}</p><p class="rumor">Im Lokal hört man mehr: Sprich die Leute an.</p></div></div>`;
@@ -882,15 +1035,16 @@ export class StationUI {
         ? `<div class="service"><h4>Mittelsmann</h4><p>„${law.wantedLabel()}, ${fmt(law.fines)} Cr offen. Für ${fmt(price)} Cr verschwindet deine Akte."</p><button class="shop-action-btn" data-act="fixer" ${ship.credits < price ? 'disabled' : ''}>Akte löschen (${fmt(price)} Cr)</button></div>`
         : '<div class="service"><h4>Mittelsmann</h4><p>„Deine Akte ist sauber. Langweilig."</p></div>';
     } else {
+      const due = law.finesDue();
       law_ = law.fines > 0
-        ? `<div class="service"><h4>SOLPOL Revier</h4><p>Status: <b>${law.wantedLabel()}</b>. Offene Bußgelder: <b>${fmt(law.fines)} Cr</b>.</p><button class="shop-action-btn" data-act="fines" ${ship.credits < law.fines ? 'disabled' : ''}>Bußgeld bezahlen</button></div>`
+        ? `<div class="service"><h4>SOLPOL Revier</h4><p>Status: <b>${law.wantedLabel()}</b>. Offene Bußgelder: <b>${fmt(law.fines)} Cr</b>${due < law.fines ? ` · nach einem Gespräch am Schalter: <b>${fmt(due)} Cr</b>` : ''}.</p><button class="shop-action-btn" data-act="fines" ${ship.credits < due ? 'disabled' : ''}>Bußgeld bezahlen (${fmt(due)} Cr)</button></div>`
         : '<div class="service"><h4>SOLPOL Revier</h4><p>Gegen Sie liegt nichts vor. Guten Flug.</p></div>';
     }
     const rank = law.rank();
     const next = law.nextRank();
     const record = `<div class="service"><h4>Pilotenakte</h4><p>Rang <b>${rank.name}</b>${next ? ` · nächster: ${next.name} (${law.points} / ${next.points})` : ''}</p>
       <p>Abschüsse: ${law.kills.pirate} Piraten, ${law.kills.police} Polizei, ${law.kills.civil} Zivil</p>
-      <p>SOLPOL: ${law.repText(law.rep.police)} · Aschebund: ${law.repText(law.rep.pirate)}</p></div>`;
+      <p>${FACTION_KEYS.map((f) => `${FACTIONS[f].short}: ${law.repText(law.rep[f] || 0)}`).join(' · ')}</p></div>`;
     return `<div class="service-row">${law_}${debt}${record}</div>`;
   }
 
@@ -926,11 +1080,13 @@ export class StationUI {
         break;
       }
       case 'repair': {
-        const hullCost = (ship.maxHull - ship.hull) * HULL_REPAIR_PRICE;
-        const sysCost = Object.values(ship.systems).reduce((s, c) => s + (1 - c) * 100, 0) * SYSTEM_REPAIR_PRICE;
+        const tech = g.story.repairMult();
+        const hullCost = (ship.maxHull - ship.hull) * HULL_REPAIR_PRICE * tech;
+        const sysCost = Object.values(ship.systems).reduce((s, c) => s + (1 - c) * 100, 0) * SYSTEM_REPAIR_PRICE * tech;
         const total = hullCost + sysCost;
         const k = Math.min(1, ship.credits / total);
         ship.credits -= Math.round(total * k);
+        g.story.gain('technik', Math.round((total * k) / 60));
         ship.hull += (ship.maxHull - ship.hull) * k;
         Object.keys(ship.systems).forEach((s) => { ship.systems[s] += (1 - ship.systems[s]) * k; });
         break;

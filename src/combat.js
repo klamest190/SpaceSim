@@ -13,6 +13,7 @@ export const BOLT_COLORS = {
   pirate: new THREE.Color(0.55, 3.6, 0.55),
   police: new THREE.Color(0.55, 1.2, 4.4),
   civil: new THREE.Color(3, 2.4, 0.6),
+  rogue: new THREE.Color(0.75, 1.0, 4.4),
 };
 
 const forwardAxis = new THREE.Vector3(0, 0, 1);

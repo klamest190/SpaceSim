@@ -142,7 +142,8 @@ export class Comm {
       msg.options.forEach((option, i) => {
         const b = document.createElement('button');
         b.className = 'comm-option';
-        b.textContent = `[${i + 1}] ${option.label}`;
+        b.textContent = `[${i + 1}] ${option.label}${option.disabled ? ` (${option.disabled})` : ''}`;
+        if (option.disabled) { b.disabled = true; b.classList.add('disabled'); }
         b.addEventListener('click', () => this.answer(i));
         this.optionsEl.appendChild(b);
       });
@@ -168,6 +169,7 @@ export class Comm {
   answer(index) {
     const msg = this.current;
     if (!msg || !msg.options || !msg.options[index]) return false;
+    if (msg.options[index].disabled) { sfx.denied(); return true; }
     this.finish();
     msg.options[index].run();
     return true;

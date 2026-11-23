@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GOODS, GOOD_KEYS, STATION_DEFS, STARTING_DEBT } from './world';
 import { sfx } from './sfx';
 import { difficultyOf } from './difficulty';
+import { CHAPTERS, SIDE } from './storyline';
 
 // Jobs and the story. A mission is a small saved record (type, parameters, progress); its objectives are rebuilt from
 // the type when needed, so saves stay simple. Objectives are a list: each knows where it points the pilot, what
@@ -17,35 +18,6 @@ const V = (x, y, z) => new THREE.Vector3(x, y, z);
 
 const BOUNTY_NAMES = ['Kapitän Rostzahn', 'Die Schwarze Ilse', 'Einauge Brandt', 'Der Totengräber', 'Silberkehle', 'Vera Sturm', 'Lange Nase', 'Der Gerber'];
 
-// Characters of the main story
-const HOLLMANN = { speaker: 'Hollmann, Kreditbank', faction: 'civil', seed: 4021 };
-const RHEE = { speaker: 'Inspektorin Rhee, SOLPOL', faction: 'police', seed: 88 };
-const VOSS = { speaker: 'Mara Voss', faction: 'pirate', seed: 777 };
-
-export const STORY = [
-  {
-    station: 'Erde Orbital-Station', title: 'Die erste Rate', giver: HOLLMANN, reward: 2500,
-    text: 'Der Frachter gehört zu 40.000 Cr noch uns, das wissen Sie. Damit Sie nicht gleich säumig werden: 5 t Chips für den Mars-Posten. Die Route gilt als sicher. Gilt.',
-    cargo: 5,
-  },
-  {
-    station: 'Mars Außenposten', title: 'Notruf aus dem Gürtel', giver: RHEE, reward: 4500,
-    text: 'Sie haben sich gegen diese Krähen gut geschlagen. Mir fehlen Schiffe. Ein Erzkonvoi wird bei der Ceres-Mine angegriffen, meine nächste Streife braucht zu lange. Fliegen Sie hin und halten Sie die Frachter am Leben.',
-  },
-  {
-    station: 'Ceres-Mine', title: 'Die Elster', giver: RHEE, reward: 6500,
-    text: 'Der Konvoi war kein Zufall: jemand verkauft dem Aschebund unsere Routen. Ein Kurier mit dem Rufnamen Elster bringt die Daten gerade zu Jupiter. Holen Sie ihn vom Himmel, sammeln Sie den Datenkern ein und bringen Sie ihn zur Europa-Station.',
-  },
-  {
-    station: 'Europa-Station', title: 'Falsche Uniformen', giver: RHEE, reward: 8500,
-    text: 'Der Datenkern nennt einen Informanten beim Saturn. Er will nur mit jemandem von außen reden, also mit Ihnen. Treffen Sie ihn bei Titan. Und seien Sie vorsichtig: Laut den Daten trägt nicht jeder Pirat Schwarz.',
-  },
-  {
-    station: 'Titan-Raffinerie', title: 'Hades-Nest', giver: RHEE, reward: 25000,
-    text: 'Das sind die Koordinaten des Hades-Nests, das Hauptquartier des Aschebunds, mitten im Gürtel. Davor liegt ihr Träger, die Schwarze Sonne, mit Mara Voss an Bord. Meine Einsatzgruppe schlägt in wenigen Minuten zu, aber wir brauchen jeden Piloten. Rüsten Sie auf. Das hier wird kein Spaziergang.',
-  },
-];
-
 export class Missions {
   constructor(game) {
     this.game = game;
@@ -55,7 +27,10 @@ export class Missions {
   reset() {
     this.active = [];
     this.boards = {};
-    this.storyStep = 0;
+    this.open = ['rate'];   // story chapters on offer
+    this.done = [];         // story chapters completed
+    this.sideDone = [];     // side quests completed
+    this.chapterOffers = {};
     this.nextId = 1;
     this.tracked = null;
     this.runtime = new Map(); // id -> { objectives, spawned, ... }, never saved
@@ -72,7 +47,9 @@ export class Missions {
 
   toSave() {
     return {
-      storyStep: this.storyStep,
+      open: this.open,
+      done: this.done,
+      sideDone: this.sideDone,
       nextId: this.nextId,
       active: this.active.map((m) => ({ ...m, step: m.checkpoint ?? m.step })),
       tracked: this.tracked ? this.tracked.id : null,
@@ -81,9 +58,25 @@ export class Missions {
 
   load(s) {
     if (!s) return;
-    this.storyStep = s.storyStep || 0;
+    this.chapterOffers = {};
+    if (s.open) {
+      this.open = s.open.filter((id) => CHAPTERS[id]);
+      this.done = s.done || [];
+      this.sideDone = s.sideDone || [];
+    } else {
+      // A save from before the branching story: the old five chapters map onto Act I and the SOLPOL path
+      const old = ['rate', 'notruf', 'elster', 'uniformen', 'nest'];
+      const step = s.storyStep || 0;
+      this.done = old.slice(0, step);
+      this.open = step < old.length ? [old[step]] : [];
+      if (step >= 4 && this.game.story) this.game.story.set('path', 'gesetz');
+      if (step >= 5 && this.game.story && !this.game.story.ending) this.game.story.ending = 'ordnung';
+    }
     this.nextId = s.nextId || 1;
-    this.active = s.active || [];
+    this.active = (s.active || []).map((m) => {
+      if (m.type === 'story' && !m.chapter) m.chapter = ['rate', 'notruf', 'elster', 'uniformen', 'nest'][m.storyIndex] || 'rate';
+      return m;
+    }).filter((m) => m.type !== 'story' || CHAPTERS[m.chapter]);
     this.tracked = this.active.find((m) => m.id === s.tracked) || this.active[0] || null;
   }
 
@@ -197,7 +190,13 @@ export class Missions {
         ];
 
       case 'story':
-        return this.storyObjectives(m, goTo, dock, destroy, rt);
+      case 'side': {
+        const say = (who, text, opts = {}) => g.comm.say(text, { ...who, duration: 8000, ...opts });
+        const ask = (who, text, options, opts = {}) => g.comm.ask(text, options, { ...(who || { speaker: 'Bordcomputer', faction: 'control', seed: 3 }), ...opts });
+        const ctx = { g, m, M: this, goTo, dock, destroy, rt, say, ask };
+        const def = m.type === 'story' ? CHAPTERS[m.chapter] : SIDE[m.quest];
+        return def ? def.objectives(ctx) : [];
+      }
       default:
         return [];
     }
@@ -251,210 +250,6 @@ export class Missions {
     }
   }
 
-  // ----- the main story --------------------------------------------------------------------------
-
-  storyObjectives(m, goTo, dock, destroy, rt) {
-    const g = this.game;
-    const say = (who, text, opts = {}) => g.comm.say(text, { ...who, duration: 8000, ...opts });
-
-    if (m.storyIndex === 0) {
-      return [{
-        label: `5 t Chips zum Mars-Posten bringen`, station: 'Mars Außenposten', checkpoint: true,
-        check: () => g.ship.isDocked && g.ui.currentStationDocked === 'Mars Außenposten',
-        track: () => rt().spawned || [],
-        tick: () => {
-          const r = rt();
-          const st = this.station('Mars Außenposten');
-          if (!r.sprung && !g.ship.isWarping && st.mesh.position.distanceTo(g.ship.position) < 1100) {
-            r.sprung = true;
-            const wing = g.encounters.spawnPirates(g.encounters.spawnPoint(340, 460), ['crow', 'crow'], { mission: m.id });
-            wing.group.aggro = true;
-            wing.ships.forEach((p) => p.attack(g.ship));
-            r.spawned = wing.ships;
-            g.comm.say('Na sieh mal an, ein Frachter ganz allein. Ladung oder Leben, Süßer!', { speaker: wing.leader.name, faction: 'pirate', seed: 301, urgent: true, duration: 4500 });
-            g.comm.say('Flugleitung Mars: Piraten bei Ihnen! Taste R schaltet den nächsten Feind auf. Der Kreis zeigt, wohin Sie zielen müssen. Rechtsklick feuert eine Rakete: erst aufschalten, dann trifft sie sicher.', { speaker: 'Flugleitung Mars', faction: 'control', duration: 11000 });
-            g.comm.say('Solange Feinde so nah sind, blockiert ihre Waffensignatur den Sprung. Rakete auf Sie? K wirft Täuschkörper. Y oder Umschalt gibt Nachbrenner.', { speaker: 'Flugleitung Mars', faction: 'control', duration: 10000 });
-          }
-        },
-      }];
-    }
-
-    if (m.storyIndex === 1) {
-      const spot = m.spot;
-      return [
-        goTo('Zum Erzkonvoi bei der Ceres-Mine', spot, 700, () => {
-          const r = rt();
-          const at = this.spotPos(spot);
-          r.convoy = [0, 1].map((i) => g.npcs.spawn('freighter', at.clone().add(V(i * 40 - 20, 5, i * 30)), {
-            mission: m.id, mode: 'goto', dest: this.station('Ceres-Mine'), arriveRange: 40, lookAt: this.station('Ceres-Mine').mesh.position, speed: 8,
-            onArrive: (n) => { rt().anyJumped = true; n.jumpOut(); }, name: i ? 'ERZFRACHTER GUDRUN' : 'ERZFRACHTER HANNE',
-          }));
-          r.convoy.forEach((f) => { f.maxHull = f.hull = f.hull * 2; });
-          r.waves = 0;
-          r.waveTimer = 0;
-          r.spawned = [];
-        }),
-        {
-          label: 'Konvoi schützen: alle Angreifer ausschalten', track: () => rt().spawned || [],
-          check: () => rt().waves >= 2 && (rt().spawned || []).every((n) => !n.alive),
-          tick: (dt) => {
-            const r = rt();
-            if (!r.convoy) return;
-            if (r.convoy.every((f) => !f.alive) && !r.anyJumped) {
-              this.fail(m, 'Beide Frachter sind verloren.');
-              return;
-            }
-            r.waveTimer -= dt;
-            if (r.waveTimer <= 0 && r.waves < 2 && r.spawned.every((n) => !n.alive)) {
-              r.waves++;
-              r.waveTimer = 4;
-              const t = r.convoy.find((f) => f.alive);
-              const from = g.solarSystem.pushClear((t ? t.pos : g.ship.position).clone().add(V(rand(-1, 1), rand(-0.2, 0.2), rand(-1, 1)).setLength(rand(380, 520))), 40);
-              const comp = r.waves === 1 ? ['crow', 'crow'] : ['jackal', 'crow', 'crow'];
-              const wing = g.encounters.spawnPirates(from, comp, { mission: m.id, lookAt: t ? t.pos : g.ship.position });
-              r.spawned = wing.ships;
-              wing.ships.forEach((p, i) => p.attack(i % 2 && t ? t : g.ship));
-              wing.group.aggro = true;
-              if (r.waves === 2) say(RHEE, 'Zweite Welle im Anflug! Halten Sie durch, Streife ist unterwegs.', { urgent: true, duration: 5000 });
-            }
-          },
-        },
-      ];
-    }
-
-    if (m.storyIndex === 2) {
-      return [
-        goTo('Kurier Elster abfangen: Jupiter', m.spot, 800, () => {
-          const r = rt();
-          const at = this.spotPos(m.spot);
-          const wing = g.encounters.spawnWing(['jackal', 'crow', 'crow'], at.clone().add(V(40, 0, 0)), { kind: 'pirates', raider: true, mission: m.id, lookAt: g.ship.position });
-          wing.group.aggro = true;
-          wing.ships.forEach((p) => p.attack(g.ship));
-          const away = g.solarSystem.pushClear(at.clone().add(V(rand(-1, 1), 0, rand(-1, 1)).setLength(2600)), 80);
-          r.courier = g.npcs.spawn('courier', at, { mission: m.id, faction: 'pirate', mode: 'goto', dest: away, arriveRange: 30, slowArrival: false, lookAt: away, name: 'KURIER ELSTER', fearless: true, bounty: 1500 });
-          r.courier.maxSpeed = 30;
-          r.courier.wing = wing.group;
-          r.courier.loot = 0;
-          // Reaching open space means it got away
-          r.courier.home.onArrive = () => { r.escaped = true; r.courier.jumpOut(); };
-          g.setTarget(r.courier);
-          say({ speaker: 'Kurier Elster', faction: 'pirate', seed: 512 }, 'Scheiße, die haben mich! Haltet ihn auf, ich springe!', { urgent: true, duration: 4000 });
-        }),
-        {
-          label: 'Kurier Elster abschießen, bevor er springt', track: () => (rt().courier ? [rt().courier] : []),
-          check: () => rt().courier && !rt().courier.alive && !rt().escaped,
-          tick: () => { if (rt().escaped) this.fail(m, 'Die Elster ist entkommen.'); },
-          done: () => {
-            const r = rt();
-            r.core = g.spawnLoot(r.courier.pos.clone(), null, 0, 0, { special: 'Datenkern', onCollect: () => { r.collected = true; } });
-            g.setTarget({ kind: 'waypoint', name: 'DATENKERN', mesh: r.core.group });
-            say(RHEE, 'Da ist der Datenkern. Mit B holen Sie ihn per Traktorstrahl an Bord.', { duration: 6000 });
-          },
-        },
-        { label: 'Datenkern mit dem Traktorstrahl bergen [B]', check: () => rt().collected === true || !rt().core },
-        dock('Datenkern zur Europa-Station bringen', 'Europa-Station'),
-      ];
-    }
-
-    if (m.storyIndex === 3) {
-      return [
-        goTo('Informant treffen: Titan', m.spot, 650, () => {
-          const r = rt();
-          const at = this.spotPos(m.spot);
-          r.informant = g.npcs.arrive('courier', at, { mission: m.id, mode: 'idle', lookAt: g.ship.position, name: 'KURIER NACHTIGALL', speed: 2 });
-          say({ speaker: 'Kurier Nachtigall', faction: 'civil', seed: 6060 }, 'Sie sind allein? Gut. Die Koordinaten stecken im... Moment. Das sind SOLPOL-Signaturen. Die gehören nicht zur Streife hier!', { urgent: true, duration: 7000 });
-          r.ambushTimer = 7;
-          r.spawned = [];
-        }),
-        {
-          label: 'Überleben: die falsche Streife ausschalten', track: () => rt().spawned || [],
-          check: () => rt().triggered && (rt().spawned || []).every((n) => !n.alive),
-          tick: (dt) => {
-            const r = rt();
-            if (r.triggered) return;
-            r.ambushTimer -= dt;
-            if (r.ambushTimer > 0) return;
-            r.triggered = true;
-            const near = g.solarSystem.pushClear(g.ship.position.clone().add(V(rand(-1, 1), 0, rand(-1, 1)).setLength(420)), 40);
-            const fake = g.encounters.spawnWing(['patrol', 'patrol', 'patrol', 'cutter'], near, { kind: 'pirates', faction: 'pirate', raider: true, mission: m.id, lookAt: g.ship.position, bounty: 900 });
-            fake.group.aggro = true;
-            fake.ships.forEach((p, i) => { p.name = `FALSCHE ${p.name}`; p.bounty = 1200; if (i === 0 && r.informant.alive) p.attack(r.informant); else p.attack(g.ship); });
-            r.spawned = fake.ships;
-            say(RHEE, 'Diese Streifen sind nicht von uns! Wer auch immer das ist, er trägt unsere Farben. Schießen Sie, Sie decken das rechtlich mit mir ab!', { urgent: true, duration: 8000 });
-          },
-          done: () => {
-            g.discover('Hades-Nest');
-            say(RHEE, 'Sie leben noch. Gut. Nachtigall hat die Koordinaten übertragen, bevor er starb: Hades-Nest, mitten im Gürtel. Kommen Sie zur Titan-Raffinerie.', { urgent: true, duration: 9000 });
-          },
-        },
-        dock('Andocken: Titan-Raffinerie', 'Titan-Raffinerie'),
-      ];
-    }
-
-    // The finale
-    return [
-      goTo('Sammelpunkt: Hades-Nest', m.spot, 900, () => {
-        const r = rt();
-        g.discover('Hades-Nest');
-        const at = this.spotPos(m.spot);
-        const nest = this.station('Hades-Nest');
-        const facing = at.clone().add(nest.mesh.position.clone().sub(at).normalize().multiplyScalar(300));
-        const queen = g.npcs.arrive('queen', facing, { mission: m.id, mode: 'idle', name: 'TRÄGER SCHWARZE SONNE', lookAt: g.ship.position, speed: 1, bounty: 15000 });
-        const group = g.npcs.newGroup({ kind: 'pirates', aggro: true });
-        queen.wing = group;
-        group.members.push(queen);
-        r.queen = queen;
-        r.spawned = [queen];
-        [[22, 8, -24], [-22, 8, -24], [22, 8, 12], [-22, 8, 12], [0, 14, -8], [0, -10, 16]].forEach(([x, y, z]) => {
-          const off = V(x, y, z);
-          const turret = g.npcs.spawn('turret', off.clone().applyQuaternion(queen.quat).add(queen.pos), { mission: m.id, mode: 'idle', group, parent: queen, parentOffset: off, speed: 0 });
-          r.spawned.push(turret);
-        });
-        const strike = g.encounters.spawnWing(['cutter', 'patrol', 'patrol', 'patrol'], at.clone().add(V(-80, 10, 80)), { kind: 'police', mode: 'patrol', mission: m.id, lookAt: queen.pos, level: 1.1 });
-        strike.ships.forEach((c) => c.attack(queen));
-        r.strike = strike.ships;
-        r.waveTimer = 8;
-        r.phase = 0;
-        g.setTarget(queen);
-        say(VOSS, 'Inspektorin Rhee schickt mir einen Frachterpiloten? Ich bin beinahe gekränkt. Alle Staffeln: Macht sie nieder!', { urgent: true, duration: 7000 });
-        say(RHEE, 'Das ist sie. Konzentrieren Sie das Feuer auf den Träger! Sobald er fällt, fallen auch die Türme.', { duration: 7000 });
-      }),
-      {
-        label: 'Träger Schwarze Sonne vernichten', track: () => (rt().queen ? [rt().queen] : []),
-        check: () => rt().queen && !rt().queen.alive,
-        tick: (dt) => {
-          const r = rt();
-          if (!r.queen || !r.queen.alive) return;
-          r.waveTimer -= dt;
-          const pirates = g.npcs.count((n) => n.faction === 'pirate' && n.mission === m.id && n.typeKey !== 'turret' && n.typeKey !== 'queen');
-          if (r.waveTimer <= 0 && pirates < 5) {
-            r.waveTimer = 24;
-            const comp = g.ship.powerLevel() > 0.45 ? ['jackal', 'jackal', 'crow'] : ['jackal', 'crow', 'crow'];
-            const launch = r.queen.pos.clone().add(V(rand(-30, 30), 22, rand(-30, 30)));
-            const wing = g.encounters.spawnWing(comp, launch, { kind: 'pirates', raider: true, mission: m.id, lookAt: g.ship.position });
-            wing.group.aggro = true;
-            wing.ships.forEach((p, i) => p.attack(i === 0 || !(r.strike || []).some((c) => c.alive) ? g.ship : r.strike.find((c) => c.alive)));
-          }
-          const hp = r.queen.hull / r.queen.maxHull;
-          if (r.phase === 0 && hp < 0.66) {
-            r.phase = 1;
-            say(VOSS, 'Das ist alles? Ich habe schon Kreditraten gezahlt, die mir mehr wehgetan haben!', { urgent: true, duration: 5000 });
-          } else if (r.phase === 1 && hp < 0.33) {
-            r.phase = 2;
-            say(VOSS, 'Reaktor kritisch?! Reißt euch zusammen! Wenn ich falle, reiße ich dich mit, Frachterpilot!', { urgent: true, duration: 5000 });
-            const reinforce = g.encounters.spawnWing(['patrol', 'patrol'], g.solarSystem.pushClear(g.ship.position.clone().add(V(200, 40, 200)), 40), { kind: 'police', mission: m.id, lookAt: r.queen.pos });
-            reinforce.ships.forEach((c) => c.attack(r.queen));
-          }
-        },
-        done: () => {
-          say(RHEE, 'Sie haben es geschafft. Der Aschebund ist kopflos, Voss ist tot, und die Kreditbank hat soeben ein sehr höfliches Schreiben von mir bekommen. Docken Sie an, Sie sind jetzt frei. Danke, Pilot.', { urgent: true, duration: 12000 });
-          g.ship.debt = 0;
-          g.hud.toast('Kredit getilgt: Das Schiff gehört dir', 'gain');
-        },
-      },
-    ];
-  }
-
   // ----- bookkeeping ---------------------------------------------------------------------------
 
   shortName(name) {
@@ -481,7 +276,7 @@ export class Missions {
 
   // A story mission in progress may stage its own ambushes: no random ones on top
   isScripted() {
-    return this.active.some((m) => m.type === 'story' && m.storyIndex >= 1);
+    return this.active.some((m) => (m.type === 'story' && m.chapter !== 'rate') || m.type === 'side');
   }
 
   contrabandFine() {
@@ -530,18 +325,56 @@ export class Missions {
       this.boards[stationName] = board;
     }
     const list = [...board.offers];
-    const story = this.storyOffer(stationName);
-    if (story) list.unshift(story);
+    list.unshift(...this.storyOffers(stationName));
     return list;
   }
 
+  // A chapter's fields may depend on the story so far (who gives the finale where)
+  field(ch, key) {
+    const v = ch[key];
+    return typeof v === 'function' ? v(this.game) : v;
+  }
+
+  // Story chapters on offer at this station, as mission offers
+  storyOffers(stationName) {
+    if (this.active.some((m) => m.type === 'story')) return [];
+    return this.open.filter((id) => this.field(CHAPTERS[id], 'station') === stationName).map((id) => this.chapterOffer(id));
+  }
+
+  // Where the story goes on, for the logbook
+  storyHints() {
+    if (this.active.some((m) => m.type === 'story')) return [];
+    return this.open.map((id) => `${CHAPTERS[id].title} · ${this.shortName(this.field(CHAPTERS[id], 'station'))}`);
+  }
+
   storyOffer(stationName) {
-    const step = STORY[this.storyStep];
-    if (!step || step.station !== stationName || this.active.some((m) => m.type === 'story')) return null;
+    return this.storyOffers(stationName)[0] || null;
+  }
+
+  chapterOffer(id) {
+    // Keep the same offer object while it is on offer, so a haggled price sticks
+    if (this.chapterOffers[id]) return this.chapterOffers[id];
+    const ch = CHAPTERS[id];
+    const giver = this.field(ch, 'giver');
+    const pay = difficultyOf(this.game).rewardMult * (this.game.story ? this.game.story.rewardMult() : 1);
+    const offer = {
+      id: `story_${id}`, type: 'story', chapter: id, title: ch.title, text: ch.text,
+      giver: giver.speaker, giverFaction: giver.faction, seed: giver.seed, reward: Math.round((ch.reward * pay) / 10) * 10, story: true,
+      danger: ch.danger || 1, rep: { police: ch.exclusive || (this.game.story && this.game.story.path === 'bank') ? 0 : 3 }, qty: ch.cargo || 0, cargoName: ch.cargoName || 'Fracht',
+      room: this.field(ch, 'room') || (giver.faction === 'police' ? 'office' : 'bar'), talkOnly: !!ch.talkOnly, choice: ch.choice || null,
+    };
+    this.chapterOffers[id] = offer;
+    return offer;
+  }
+
+  // Side quests are offered in person (crew, Dr. Varga), never on the board
+  sideOffer(quest) {
+    const q = SIDE[quest];
+    if (!q || this.sideDone.includes(quest) || this.active.some((m) => m.quest === quest)) return null;
+    const pay = difficultyOf(this.game).rewardMult * (this.game.story ? this.game.story.rewardMult() : 1);
     return {
-      id: `story${this.storyStep}`, type: 'story', storyIndex: this.storyStep, title: step.title, text: step.text,
-      giver: step.giver.speaker, giverFaction: step.giver.faction, seed: step.giver.seed, reward: Math.round(step.reward * difficultyOf(this.game).rewardMult), story: true,
-      danger: Math.min(5, this.storyStep + 1), rep: { police: 6 }, qty: step.cargo || 0, cargoName: 'Quantenchips',
+      id: `side_${quest}`, type: 'side', quest, title: q.title, text: q.text, giver: q.giver, giverFaction: q.faction, seed: q.seed,
+      reward: Math.round((q.reward * pay) / 10) * 10, danger: q.danger || 1, rep: {},
     };
   }
 
@@ -561,7 +394,7 @@ export class Missions {
       const m = makers.splice(j, 1)[0]();
       if (m) offers.push(m);
     }
-    const pay = difficultyOf(this.game).rewardMult;
+    const pay = difficultyOf(this.game).rewardMult * (this.game.story ? this.game.story.rewardMult() : 1);
     offers.forEach((o) => { o.reward = Math.round((o.reward * pay) / 10) * 10; });
     return offers;
   }
@@ -659,8 +492,9 @@ export class Missions {
   // Can this offer be taken right now? Returns a reason why not, or null.
   blocker(m) {
     const { ship } = this.game;
+    if (m.talkOnly) return 'Nur im persönlichen Gespräch';
     if (this.active.length >= MAX_ACTIVE) return 'Maximal vier Aufträge gleichzeitig';
-    if ((m.qty && (m.type === 'delivery' || m.type === 'smuggle' || (m.type === 'story' && m.storyIndex === 0))) && ship.getCurrentCargoWeight() + m.qty > ship.maxCargo) return `Zu wenig Frachtraum (${m.qty} t nötig)`;
+    if ((m.qty && (m.type === 'delivery' || m.type === 'smuggle' || m.type === 'story')) && ship.getCurrentCargoWeight() + m.qty > ship.maxCargo) return `Zu wenig Frachtraum (${m.qty} t nötig)`;
     return null;
   }
 
@@ -669,7 +503,8 @@ export class Missions {
     const { game } = this;
     const m = { ...offer, id: this.nextId++, step: 0, from: stationName };
     if (m.type === 'story') this.prepareStory(m);
-    if ((m.type === 'delivery' || m.type === 'smuggle' || (m.type === 'story' && m.storyIndex === 0)) && m.qty) m.cargoHeld = m.qty;
+    if (m.type === 'side' && SIDE[m.quest].prepare) SIDE[m.quest].prepare(this, m);
+    if ((m.type === 'delivery' || m.type === 'smuggle' || m.type === 'story') && m.qty) m.cargoHeld = m.qty;
     this.active.push(m);
     const board = this.boards[stationName];
     if (board) board.offers = board.offers.filter((o) => o.id !== offer.id);
@@ -680,27 +515,28 @@ export class Missions {
   }
 
   prepareStory(m) {
-    const { solarSystem } = this.game;
-    const spots = {
-      1: () => this.makeSpot('Ceres-Mine', 700),
-      2: () => this.makeSpot('Jupiter', 400),
-      3: () => this.makeSpot('Titan-Raffinerie', 500),
-      4: () => {
-        const nest = this.station('Hades-Nest').mesh.position;
-        const toSun = nest.clone().negate().setY(0).normalize().multiplyScalar(1200);
-        return { anchor: 'Hades-Nest', off: [toSun.x, 30, toSun.z] };
-      },
-    };
-    void solarSystem;
-    if (spots[m.storyIndex]) m.spot = spots[m.storyIndex]();
-    if (m.storyIndex === 4) this.game.discover('Hades-Nest');
+    const ch = CHAPTERS[m.chapter];
+    if (ch.prepare) ch.prepare(this, m);
+    if (ch.onAccept) ch.onAccept(this.game, m);
+    // Choosing one door at the crossroads closes the others
+    if (ch.exclusive) this.open = this.open.filter((id) => id === m.chapter || CHAPTERS[id].exclusive !== ch.exclusive);
+    this.chapterOffers = {};
+    if (this.game.crew) this.game.crew.onChapter(m.chapter, 'accept');
+  }
+
+  // A chapter that is only a conversation (no flying): done the moment it is talked through
+  finishTalk(id) {
+    this.open = this.open.filter((x) => x !== id);
+    this.done.push(id);
+    this.chapterOffers = {};
+    this.game.saveProgress();
   }
 
   abort(m) {
     const { law } = this.game;
-    if (m.type === 'story') {
+    if (m.type === 'story' || m.type === 'side') {
       this.remove(m);
-      this.game.hud.toast('Auftrag abgebrochen. Er wartet weiter am Terminal.', 'warn');
+      this.game.hud.toast(m.type === 'story' ? 'Auftrag abgebrochen. Er wartet weiter am Terminal.' : 'Auftrag abgebrochen. Du kannst ihn später wieder annehmen.', 'warn');
       return;
     }
     law.changeRep('police', m.giverFaction === 'police' ? -3 : -1);
@@ -721,31 +557,71 @@ export class Missions {
   }
 
   complete(m) {
-    const { ship, law, hud, comm } = this.game;
+    const { ship, law, hud, story, crew } = this.game;
     ship.credits += m.reward;
     Object.entries(m.rep || {}).forEach(([f, v]) => law.changeRep(f, v));
-    hud.toast(`Auftrag erfüllt: +${fmt(m.reward)} Cr`, 'gain');
+    if (m.reward) hud.toast(`Auftrag erfüllt: +${fmt(m.reward)} Cr`, 'gain');
     sfx.coin();
-    const wasStory = m.type === 'story';
     this.remove(m);
-    if (wasStory) {
-      this.storyStep++;
-      const next = STORY[this.storyStep];
-      if (next) {
-        const msg = `Nächster Auftrag wartet: ${next.title}, bei ${this.shortName(next.station)}.`;
-        comm.say(msg, { ...next.giver, duration: 8000 });
-        hud.toast(msg, 'info');
+    this.experience(m);
+    if (crew) crew.onMission(m);
+    if (m.type === 'story') {
+      const ch = CHAPTERS[m.chapter];
+      this.done.push(m.chapter);
+      this.open = this.open.filter((id) => id !== m.chapter);
+      if (ch.onComplete) ch.onComplete(this.game, m);
+      if (ch.log) story.log(ch.log);
+      if (ch.news) story.news(ch.news);
+      const next = ch.next(this.game).filter((id) => !this.done.includes(id) && !this.open.includes(id));
+      this.open.push(...next);
+      this.chapterOffers = {};
+      if (crew) crew.onChapter(m.chapter, 'done');
+      if (ch.announce) {
+        hud.toast(ch.announce, 'info');
+      } else if (next.length) {
+        const nc = CHAPTERS[next[0]];
+        const where = this.shortName(this.field(nc, 'station'));
+        hud.toast(nc.talkOnly ? `Jemand erwartet dich: ${where}.` : `Nächster Auftrag wartet: ${nc.title}, bei ${where}.`, 'info');
       }
+    } else if (m.type === 'side') {
+      const q = SIDE[m.quest];
+      this.sideDone.push(m.quest);
+      if (q.onComplete) q.onComplete(this.game, m);
+      if (q.log) story.log(q.log, 'side');
+    } else {
+      story.log(`Auftrag erledigt: ${m.title} (${fmt(m.reward)} Cr).`, 'job');
     }
     this.game.ui.stationUI.refresh();
     this.game.saveProgress();
+  }
+
+  // What a finished job teaches
+  experience(m) {
+    const { story } = this.game;
+    if (!story) return;
+    switch (m.type) {
+      case 'bounty': case 'patrol': story.gain('flug', 45); story.gain('reden', 8); break;
+      case 'escort': story.gain('flug', 35); story.gain('reden', 8); story.stats.rescued++; story.changeRep({ guild: 2 }); break;
+      case 'delivery': story.gain('handel', 30); story.gain('reden', 10); story.stats.delivered++; this.ownerRep(m.to, 1.5); break;
+      case 'procure': story.gain('handel', 35); story.gain('reden', 10); story.stats.delivered++; this.ownerRep(m.to, 2); break;
+      case 'smuggle': story.gain('handel', 35); story.gain('reden', 15); story.stats.smuggled++; break;
+      case 'story': story.gain('reden', 45); story.gain('flug', 30); break;
+      case 'side': story.gain('reden', 35); story.gain('technik', 20); break;
+      default:
+    }
+  }
+
+  ownerRep(stationName, amount) {
+    const def = STATION_DEFS.find((d) => d.name === stationName);
+    if (def && def.owner && def.owner !== 'police') this.game.law.changeRep(def.owner, amount);
   }
 
   fail(m, why) {
     const { hud, comm, law } = this.game;
     hud.toast(`Auftrag gescheitert: ${m.title}`, 'bad');
     comm.say(`${why} Der Auftrag ist gescheitert.`, { speaker: m.giver, faction: m.giverFaction, seed: m.seed || 5, urgent: true, duration: 6000 });
-    if (m.type !== 'story') law.changeRep('police', -1);
+    if (m.type !== 'story' && m.type !== 'side') law.changeRep('police', -1);
+    if (this.game.crew) this.game.crew.onFail(m);
     this.remove(m);
   }
 

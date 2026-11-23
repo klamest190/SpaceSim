@@ -19,35 +19,35 @@ export function emptyCargo() {
 
 // planetIndex: 0 = stands still in the belt, away from the Sun at orbitRadius, at `angle`.
 // Others circle their planet at `orbit` planet radii, or with `moon` that moon at `orbit` moon radii. size: bounding radius in units (the ship is 2.5 long).
-// security: 1 = SOLPOL everywhere, 0 = lawless. produces / consumes: tons per minute.
+// owner: the faction that runs the place (prices and welcome follow your standing with it). security: 1 = SOLPOL everywhere, 0 = lawless. produces / consumes: tons per minute.
 export const STATION_DEFS = [
   {
-    name: 'Venus Wolkenstadt', short: 'Venus-Wolkenstadt', planetIndex: 2, orbit: 1.42, style: 'spindle', size: 24, security: 0.8,
+    name: 'Venus Wolkenstadt', owner: 'bank', short: 'Venus-Wolkenstadt', planetIndex: 2, orbit: 1.42, style: 'spindle', size: 24, security: 0.8,
     produces: { lux: 2, med: 2 }, consumes: { ice: 3, food: 2, ore: 1 },
     blurb: 'Schwebende Kuppeln über den Säurewolken. Reiches Publikum, teure Laster.',
   },
   {
-    name: 'Erde Orbital-Station', short: 'Erde-Station', planetIndex: 3, orbit: 1.5, style: 'ring', size: 24, security: 0.95,
+    name: 'Erde Orbital-Station', owner: 'police', short: 'Erde-Station', planetIndex: 3, orbit: 1.5, style: 'ring', size: 24, security: 0.95,
     produces: { tech: 3, food: 3, lux: 1 }, consumes: { ore: 3, ice: 2, med: 0.5 },
     blurb: 'Das Tor zur Erde. Strenge Zollkontrollen, beste Werften.',
   },
   {
-    name: 'Mars Außenposten', short: 'Mars-Posten', planetIndex: 4, orbit: 1.65, style: 'ring', size: 22, security: 0.65,
+    name: 'Mars Außenposten', owner: 'police', short: 'Mars-Posten', planetIndex: 4, orbit: 1.65, style: 'ring', size: 22, security: 0.65,
     produces: { ore: 3, med: 0.5 }, consumes: { ice: 3, tech: 1.5, food: 2.5, lux: 0.3 },
     blurb: 'Rote Staubstürme, durstige Kolonien. Hier zählt jede Tonne Eis.',
   },
   {
-    name: 'Ceres-Mine', short: 'Ceres-Mine', planetIndex: 0, orbitRadius: 3700, angle: 2.1, style: 'mine', size: 24, security: 0.35,
+    name: 'Ceres-Mine', owner: 'guild', short: 'Ceres-Mine', planetIndex: 0, orbitRadius: 3700, angle: 2.1, style: 'mine', size: 24, security: 0.35,
     produces: { ore: 5, ice: 3 }, consumes: { food: 3, med: 2, tech: 1.2 },
     blurb: 'Grubenstadt im Asteroidengürtel. Die Polizei kommt selten, die Piraten oft.',
   },
   {
-    name: 'Europa-Station', short: 'Europa-Station', planetIndex: 5, moon: 'Europa', orbit: 2.0, style: 'spindle', size: 24, security: 0.5,
+    name: 'Europa-Station', owner: 'europa', short: 'Europa-Station', planetIndex: 5, moon: 'Europa', orbit: 2.0, style: 'spindle', size: 24, security: 0.5,
     produces: { ice: 5, med: 1.5 }, consumes: { tech: 1.2, ore: 2.5, lux: 0.7, food: 1.5 },
     blurb: 'Forschungsstation über Europas Eispanzer, Jupiter füllt den halben Himmel. Eis im Überfluss.',
   },
   {
-    name: 'Titan-Raffinerie', short: 'Titan-Raffinerie', planetIndex: 6, moon: 'Titan', orbit: 1.75, style: 'mine', size: 24, security: 0.35,
+    name: 'Titan-Raffinerie', owner: 'guild', short: 'Titan-Raffinerie', planetIndex: 6, moon: 'Titan', orbit: 1.75, style: 'mine', size: 24, security: 0.35,
     produces: { food: 1.5, ice: 1.5 }, consumes: { ore: 2.5, tech: 1, med: 1, lux: 0.4 },
     blurb: 'Methan und Rost über Titans orangem Smog, hinter den Ringen des Saturn. Hier fragt niemand zweimal.',
   },
@@ -57,7 +57,7 @@ export const STATION_DEFS = [
     blurb: 'Letzter Halt vor dem Nichts. Der Zoll ist ein Gerücht.',
   },
   {
-    name: 'Hades-Nest', short: 'Hades-Nest', planetIndex: 0, orbitRadius: 4500, angle: 3.9, style: 'nest', size: 30, security: 0, faction: 'pirate', blackMarket: true, hidden: true,
+    name: 'Hades-Nest', owner: 'pirate', short: 'Hades-Nest', planetIndex: 0, orbitRadius: 4500, angle: 3.9, style: 'nest', size: 30, security: 0, faction: 'pirate', blackMarket: true, hidden: true,
     produces: { arms: 2.5, stims: 2.5 }, consumes: { food: 3, med: 2, tech: 1, lux: 1 },
     blurb: 'Ein ausgehöhlter Fels, gespickt mit Kanonen. Heimat des Aschebunds.',
   },

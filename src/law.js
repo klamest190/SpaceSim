@@ -21,9 +21,9 @@ export class Law {
   reset() {
     this.wanted = 0;
     this.fines = 0;
-    this.rep = { police: 0, pirate: -20 };
+    this.rep = { police: 0, pirate: -20, bank: 0, guild: 0, europa: 0 };
     this.points = 0;
-    this.kills = { pirate: 0, police: 0, civil: 0 };
+    this.kills = { pirate: 0, police: 0, civil: 0, rogue: 0 };
     this.decayTimer = 0;
     this.warnedAt = -100;
     this.time = 0;
@@ -98,7 +98,8 @@ export class Law {
 
   // The player's guns hit a ship. Stray shots earn a warning; keeping at it is a crime.
   reportHit(npc) {
-    if (npc.faction === 'pirate') return;
+    // Pirates, Kessler's turncoats and the pilot's own wingmen are fair game or forgiven
+    if (npc.faction === 'pirate' || npc.faction === 'rogue' || npc.ally) return;
     this.time = performance.now() / 1000;
     npc.crimeHits++;
     if (npc.crimeHits === 1 && this.time - this.warnedAt > 6) {
@@ -120,9 +121,10 @@ export class Law {
     this.points += npc.points;
     const seen = this.witnessed(npc);
 
-    if (npc.faction === 'pirate') {
+    if (npc.faction === 'pirate' || npc.faction === 'rogue') {
       this.changeRep('police', 1 + npc.points * 0.3);
-      this.changeRep('pirate', -1 - npc.points * 0.4);
+      if (npc.faction === 'pirate' && !npc.mission) this.changeRep('pirate', -1 - npc.points * 0.4);
+      else if (npc.faction === 'pirate') this.changeRep('pirate', -0.5);
       if (npc.bounty > 0) {
         if (this.wanted <= 1) {
           ship.credits += npc.bounty;
@@ -155,6 +157,8 @@ export class Law {
     }
     this.rankedAt = rank.name;
     missions.onKill(npc);
+    if (this.game.story) this.game.story.onKill(npc);
+    if (this.game.crew) this.game.crew.onKill(npc, seen);
   }
 
   // Police scan found contraband in the hold; the choice is the player's
@@ -174,10 +178,17 @@ export class Law {
     });
   }
 
+  // What the fines cost once a good talker has had a word at the counter
+  finesDue() {
+    const k = this.game.story ? this.game.story.fineMult() : 1;
+    return Math.round(this.fines * k);
+  }
+
   payFines() {
     const { ship } = this.game;
-    if (ship.credits < this.fines) return false;
-    ship.credits -= this.fines;
+    const due = this.finesDue();
+    if (ship.credits < due) return false;
+    ship.credits -= due;
     this.fines = 0;
     this.wanted = 0;
     this.clearPoliceAggro();

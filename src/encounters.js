@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GOODS, GOOD_KEYS } from './world';
+import { GOOD_KEYS } from './world';
 import { sfx } from './sfx';
 import { difficultyOf } from './difficulty';
 
@@ -242,67 +242,9 @@ export class Encounters {
 
   // --- pirate shakedown -------------------------------------------------------------------------
 
+  // The shakedown itself is a conversation with a captain: see radio.js
   ambush(pos = null, extra = 0) {
-    const { ship, comm } = this.game;
-    const at = pos || this.spawnPoint(520, 780);
-    const wing = this.spawnPirates(at, this.pirateComp(extra), { mode: 'hail' });
-    wing.group.truce = true;
-    wing.leader.holdRange = 190;
-    this.hail = { group: wing.group, leader: wing.leader };
-    const w = wing.leader;
-    const seed = w.pos.x * 13;
-    const talk = { speaker: w.name, faction: 'pirate', seed, owner: wing.group };
-
-    const weight = ship.getCurrentCargoWeight();
-    const demand = Math.round(Math.max(300, ship.credits * 0.12));
-    const options = [];
-    let line;
-    if (weight > 0) {
-      line = `Hübscher Frachter. Hier spricht der Aschebund. Ladung abwerfen, dann lebst du weiter.`;
-      options.push({ label: 'Ladung abwerfen', run: () => this.surrenderCargo(wing, talk) });
-    } else {
-      line = `Leerer Bauch, voller Beutel? Hier Aschebund. ${demand.toLocaleString('de-DE')} Cr, oder du bist Schrott.`;
-      if (ship.credits >= demand) options.push({ label: `${demand.toLocaleString('de-DE')} Cr zahlen`, run: () => this.payOff(wing, talk, demand) });
-    }
-    options.push({ label: 'Komm und hol es dir', run: () => this.startFight(wing.group, talk, 'Dann eben auf die harte Tour!') });
-    sfx.klaxon();
-    comm.ask(line, options, { ...talk, timeout: HAIL_TIMEOUT, onTimeout: () => this.startFight(wing.group, talk, 'Zu lange überlegt. Feuer frei!') });
-    return wing;
-  }
-
-  startFight(group, talk, line) {
-    const { comm, ship } = this.game;
-    this.hail = null;
-    group.truce = false;
-    group.aggro = true;
-    group.members.forEach((n) => { if (n.alive && n.guns) n.attack(ship); });
-    if (line) comm.say(line, { ...talk, owner: undefined, urgent: true, duration: 3500 });
-  }
-
-  surrenderCargo(wing, talk) {
-    const { ship, law, comm } = this.game;
-    this.hail = null;
-    const keys = GOOD_KEYS.filter((k) => ship.cargo[k] > 0).sort((a, b) => GOODS[b].base - GOODS[a].base);
-    let toDrop = Math.ceil(ship.getCurrentCargoWeight() * 0.6);
-    keys.forEach((k) => {
-      const n = Math.min(toDrop, ship.cargo[k]);
-      ship.cargo[k] -= n;
-      toDrop -= n;
-    });
-    law.changeRep('pirate', 2);
-    comm.say('Kluge Entscheidung. Flieg weiter, bevor ich es mir anders überlege.', { ...talk, owner: undefined, urgent: true, duration: 5000 });
-    wing.group.members.forEach((n) => { if (n.alive) { n.mode = 'flee'; n.fleeFrom = null; n.leaving = rand(5, 8); } });
-    this.game.ui.updateHUDStats();
-  }
-
-  payOff(wing, talk, amount) {
-    const { ship, law, comm } = this.game;
-    this.hail = null;
-    ship.credits -= amount;
-    law.changeRep('pirate', 2);
-    comm.say('Geht doch. Bis zum nächsten Mal, Kleiner.', { ...talk, owner: undefined, urgent: true, duration: 5000 });
-    wing.group.members.forEach((n) => { if (n.alive) { n.mode = 'flee'; n.fleeFrom = null; n.leaving = rand(5, 8); } });
-    this.game.ui.updateHUDStats();
+    return this.game.radio.ambush(pos, extra);
   }
 
   // --- a freighter under attack --------------------------------------------------------------------
@@ -314,6 +256,7 @@ export class Encounters {
     const victim = npcs.arrive(Math.random() < 0.75 ? 'freighter' : 'courier', at, { mode: 'goto', dest, arriveRange: 40, slowArrival: false, lookAt: dest });
     const comp = this.pirateComp(-1).slice(0, 3);
     const wing = this.spawnPirates(this.scatter(at, 180), comp, { lookAt: at });
+    this.game.radio.adopt(wing);
     wing.ships.forEach((p) => p.attack(victim));
     const rescue = { victim, wing: wing.ships, reward: Math.round(rand(500, 1200) + comp.length * 350), done: false };
     this.rescues.push(rescue);
@@ -353,6 +296,7 @@ export class Encounters {
     const at = this.spawnPoint(900, 1300);
     const cops = this.spawnWing(['patrol', 'patrol'], at, { lookAt: this.scatter(at, 200) });
     const crooks = this.spawnPirates(this.scatter(at, 260), this.pirateComp(0).slice(0, 3), { lookAt: at });
+    this.game.radio.adopt(crooks);
     cops.ships.forEach((c) => c.attack(crooks.leader));
     crooks.ships.forEach((p) => p.attack(cops.leader));
     if (!comm.current) comm.say('SOLPOL an alle: Gefecht mit Piraten im Sektor. Unterstützung erwünscht, Kopfgeld wird ausgezahlt.', { speaker: 'SOLPOL Streife', faction: 'police', duration: 6000 });
@@ -391,9 +335,10 @@ export class Encounters {
   spawnPiratesAttack(pos, line, extra = 0) {
     const { ship, comm } = this.game;
     const wing = this.spawnPirates(pos, this.pirateComp(extra), {});
+    const f = this.game.radio.adopt(wing);
     wing.group.aggro = true;
     wing.ships.forEach((p) => p.attack(ship));
-    if (line) comm.say(line, { speaker: wing.leader.name, faction: 'pirate', seed: pos.x, urgent: true, duration: 5000 });
+    if (line) comm.say(line, { ...this.game.radio.who(f.cap), urgent: true, duration: 5000 });
     sfx.klaxon();
     return wing;
   }
@@ -523,9 +468,12 @@ export class Encounters {
 
   tryBribe(cop, fine, bribe, talk) {
     const { ship, law, comm, missions } = this.game;
-    const chance = 0.45 + law.rep.pirate * 0.002 - Math.max(0, law.rep.police) * 0.001;
+    const talker = (this.game.story.level('reden') - 1) * 0.07;
+    const chance = 0.45 + talker + law.rep.pirate * 0.002 - Math.max(0, law.rep.police) * 0.001;
     ship.credits -= bribe;
     if (Math.random() < chance) {
+      this.game.story.stats.bribes++;
+      this.game.story.gain('reden', 15);
       law.changeRep('police', -1);
       comm.say('Ich habe nichts gesehen. Und Sie haben mich nie gesehen. Verschwinden Sie.', { ...talk, duration: 5500 });
     } else {
@@ -554,7 +502,7 @@ export class Encounters {
     if (ui.tutorial.active || this.interdictionCooldown > 0 || distance < 650) return false;
     if (!law.piratesHostile() || missions.isScripted()) return false;
     const danger = 1 - Math.max(solarSystem.securityAt(from), solarSystem.securityAt(to));
-    const chance = 0.05 + danger * 0.28;
+    const chance = (0.05 + danger * 0.28) * (this.game.crew ? this.game.crew.interdictionMult() : 1);
     if (Math.random() > chance) return false;
     this.interdictionCooldown = INTERDICTION_COOLDOWN;
     return true;
@@ -569,6 +517,7 @@ export class Encounters {
 
   onFlee(npc) {
     const { comm, ship } = this.game;
+    if (this.game.radio.onFlee(npc)) return;
     if (npc.faction !== 'pirate' || npc.pos.distanceTo(ship.position) > 900 || comm.pendingQuestion) return;
     // Sometimes they buy their way out, leaving a crate
     if (npc.lastAttacker === ship && Math.random() < 0.35) {

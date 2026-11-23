@@ -157,6 +157,7 @@ class Controls {
       case 'KeyM': return down ? 'm' : null;
       case 'KeyO': return down ? 'o' : null;
       case 'KeyI': return down ? 'i' : null;
+      case 'KeyJ': return down ? 'j' : null;
       case 'KeyH': return down ? 'h' : null;
       case 'Escape': return down ? 'escape' : null;
       case 'Digit1': case 'Numpad1': return down ? '1' : null;
@@ -305,6 +306,8 @@ class Controls {
         keyTriggered = 'escape';
         break;
     }
+    // Z (by the letter it types, like Y): hail the targeted ship
+    if (!keyTriggered && (e.key || '').toLowerCase() === 'z') keyTriggered = 'z';
 
     if (e.repeat && keyTriggered && !['up', 'down'].includes(keyTriggered)) return;
 

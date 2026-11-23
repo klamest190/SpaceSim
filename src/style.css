@@ -3212,5 +3212,83 @@ body.on-foot .comm-bezel.idle { display: none; }
   display: inline-block; min-width: 1.3em; padding: 0 4px; text-align: center; color: #0b1a10;
   background: #9dffc4; box-shadow: 0 0 6px rgba(80, 255, 150, 0.5); border-radius: 2px;
 }
-.stand-prompt.dim { opacity: 0.45; font-size: 1.05rem; }
+.stand-prompt small { font-size: 0.8em; opacity: 0.75; }
+.stand-prompt.danger { border-left-color: var(--alarm); }
+.stand-prompt.danger small { color: #ff8a70; opacity: 1; }
 .stand-prompt.hidden, body.on-foot .stand-prompt { display: none; }
+
+/* ==========================================================================
+   Story: logbook chronicle, skills, powers, crew; the ending
+   ========================================================================== */
+
+.comm-option.disabled, .comm-option:disabled { opacity: 0.45; cursor: not-allowed; border-style: dashed; }
+.comm-option.disabled:hover, .comm-option:disabled:hover { background: transparent; color: var(--amber); }
+
+.pause-terminal { max-height: 92vh; overflow-y: auto; }
+.pause-story {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1.2fr 1.5fr;
+  gap: 22px;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px dashed rgba(92, 255, 122, 0.3);
+  line-height: 1.2;
+  font-size: 1.05rem;
+}
+
+.skill-row { display: grid; grid-template-columns: 5.2em auto auto 1fr; align-items: center; gap: 8px; margin-bottom: 6px; }
+.skill-row .pips { color: var(--amber); letter-spacing: 1px; }
+.skill-row em { font-style: normal; color: var(--phosphor-dim); font-size: 0.85em; }
+.skill-row .xp { position: relative; height: 5px; background: rgba(92, 255, 122, 0.15); }
+.skill-row .xp i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--phosphor); box-shadow: 0 0 4px var(--phosphor); }
+
+.crew-row { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.crew-row small { font-size: 0.85em; }
+.crew-row .loyal { white-space: nowrap; color: var(--phosphor); display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.crew-row .loyal.low { color: var(--alarm); }
+.crew-row .shop-action-btn { font-size: 0.8rem; padding: 2px 6px; }
+
+.chronicle { list-style: none; padding: 0; margin: 0; max-height: 15em; overflow-y: auto; }
+.chronicle li { margin-bottom: 6px; color: var(--amber); }
+.chronicle li::before { content: '▸ '; color: var(--phosphor-dim); }
+.chronicle li.job, .chronicle li.skill { color: var(--phosphor-dim); }
+.chronicle li.crew::before { content: '☺ '; }
+.chronicle li.ending { color: var(--phosphor); }
+
+.ending-bezel { width: min(820px, 94vw); padding: 10px 16px 18px; }
+.ending-vdu { padding: 30px 36px 28px; font-size: 1.25rem; line-height: 1.25; max-height: 88vh; overflow-y: auto; }
+.ending-vdu > * { position: relative; z-index: 5; }
+.ending-kicker { letter-spacing: 0.4em; color: var(--phosphor-dim); margin: 0 0 4px; }
+#ending-title { font-size: clamp(2.2rem, 6vw, 3.6rem); margin: 0 0 16px; }
+#ending-text { color: var(--amber); margin-bottom: 14px; }
+#ending-epilogue { list-style: none; padding: 0; margin: 0 0 16px; }
+#ending-epilogue li { margin-bottom: 8px; }
+#ending-epilogue li::before { content: '▸ '; color: var(--phosphor-dim); }
+#ending-stats { margin-bottom: 18px; }
+
+@media (max-width: 1000px) {
+  .pause-story { grid-template-columns: 1fr 1fr; }
+}
+.chronicle, .pause-terminal, .ending-vdu { scrollbar-color: var(--phosphor-dim) transparent; scrollbar-width: thin; }
+.story-hint { color: var(--phosphor); margin-bottom: 8px; }
+
+/* ==========================================================================
+   Journal (J)
+   ========================================================================== */
+
+#journal-screen { z-index: 160; }
+.journal-bezel { width: min(980px, 96vw); }
+.journal-terminal { max-height: 90vh; overflow-y: auto; }
+.journal-help { margin: -4px 0 10px; }
+.journal-body section { margin-bottom: 14px; }
+.journal-entry {
+  display: flex; justify-content: space-between; align-items: center; gap: 14px;
+  padding: 7px 10px; margin-bottom: 6px; border: 1px solid rgba(92, 255, 122, 0.18); background: rgba(92, 255, 122, 0.03);
+}
+.journal-entry.tracked { border-color: var(--amber); background: rgba(255, 176, 0, 0.06); }
+.journal-entry b { color: var(--amber); font-weight: 400; }
+.journal-entry p { margin: 3px 0 0; line-height: 1.15; }
+.journal-tag { display: inline-block; margin-right: 8px; padding: 0 5px; font-size: 0.8em; color: var(--screen, #031); background: var(--phosphor-dim); }
+.journal-dist { display: block; margin-top: 3px; font-size: 0.85em; color: var(--phosphor-dim); }
+.journal-go { white-space: nowrap; }
+.journal-note { color: var(--phosphor-dim); margin: 0 0 6px; }

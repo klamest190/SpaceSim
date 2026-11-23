@@ -283,8 +283,17 @@ export class CombatHUD {
 
   updateTracker(missions, ship) {
     const m = missions.tracked;
-    if (!m || ship.isDestroyed) {
+    if (ship.isDestroyed) {
       this.tracker.classList.add('hidden');
+      return;
+    }
+    if (!m) {
+      // No job running: where the story goes on
+      const hints = missions.storyHints();
+      if (!hints.length) { this.tracker.classList.add('hidden'); this.trackerHtml = ''; return; }
+      const html = `<b>${hints.length > 1 ? 'Am Scheideweg' : 'Hauptgeschichte'}</b><span>▸ ${hints.join(' oder ')}</span><i>[J] Journal · Kurs setzen</i>`;
+      if (html !== this.trackerHtml) { this.tracker.innerHTML = html; this.trackerHtml = html; }
+      this.tracker.classList.remove('hidden');
       return;
     }
     const obj = missions.current(m);
@@ -294,7 +303,7 @@ export class CombatHUD {
       const pos = dest.group ? dest.group.position : dest.mesh.position;
       dist = ` · ${fmtDist(pos.distanceTo(ship.position))}`;
     }
-    const html = `<b>${m.title}</b><span>▸ ${obj ? obj.label : 'Abgeschlossen'}${dist}</span><i>[J] Ziel · [I] Logbuch</i>`;
+    const html = `<b>${m.title}</b><span>▸ ${obj ? obj.label : 'Abgeschlossen'}${dist}</span><i>[J] Journal · [I] Logbuch</i>`;
     if (html !== this.trackerHtml) {
       this.tracker.innerHTML = html;
       this.trackerHtml = html;

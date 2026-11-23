@@ -261,6 +261,15 @@ export class Spaceship {
     this.sensorRange = [2200, 3000, 4000, 5500][this.upgrades.sensor - 1];
     this.lockTime = [1.9, 1.55, 1.25, 0.95][this.upgrades.sensor - 1];
 
+    // The pilot's flying skill: a practised hand gets more out of the same engine
+    const story = this.game && this.game.story;
+    if (story) {
+      const k = story.flightMult();
+      this.maxSpeed *= k;
+      this.acceleration *= k;
+      this.turnRate *= k;
+    }
+
     // Clamp shield to new max
     if (this.shield > this.maxShield) this.shield = this.maxShield;
   }

@@ -26,7 +26,7 @@ const pick = (list) => list[Math.floor(Math.random() * list.length)];
 
 function makeName(typeKey, spec, faction) {
   if (faction === 'pirate') return `${spec.label.toUpperCase()} ${pick(PIRATE_NAMES).toUpperCase()}`;
-  if (faction === 'police') return `${spec.label.toUpperCase()} ${10 + Math.floor(Math.random() * 89)}-${1 + Math.floor(Math.random() * 9)}`;
+  if (faction === 'police' || faction === 'rogue') return `${spec.label.toUpperCase()} ${10 + Math.floor(Math.random() * 89)}-${1 + Math.floor(Math.random() * 9)}`;
   return `${spec.label.toUpperCase()} ${pick(FREIGHTER_NAMES).toUpperCase()}`;
 }
 
@@ -53,7 +53,9 @@ export class NPC {
     this.loot = spec.loot;
     this.points = spec.points;
 
-    this.visual = new ShipVisual(typeKey, this.faction, game.renderer);
+    // look: what it pretends to be (Kessler's turncoats fly in SOLPOL colours)
+    this.look = opts.look || (this.faction === 'rogue' ? 'police' : this.faction);
+    this.visual = new ShipVisual(typeKey, this.look, game.renderer);
     this.mesh = this.visual.group;
     this.pos = this.mesh.position;
     this.quat = this.mesh.quaternion;
@@ -101,7 +103,8 @@ export class NPC {
     this.shieldDelay = 0;
     this.timeAlive = 0;
 
-    this.trail = game.fx.addTrail(this.faction === 'police' ? 0x3a6ec0 : this.faction === 'pirate' ? 0xb04a20 : 0x8a7038, spec.radius > 5 ? 0.9 : 0.55);
+    this.ally = !!opts.ally;
+    this.trail = game.fx.addTrail(this.look === 'police' ? 0x3a6ec0 : this.look === 'pirate' ? 0xb04a20 : 0x8a7038, spec.radius > 5 ? 0.9 : 0.55);
     game.scene.add(this.mesh);
   }
 
@@ -516,7 +519,14 @@ export class NPC {
       fx.hullHit(point, this.vel);
     }
 
-    if (attacker === ship) {
+    if (attacker === ship && this.ally) {
+      // A wingman takes a stray shot with a curse, not a grudge
+      this.game.hud.hitMarker(this.shield <= 0);
+      if (this.lastAllyGripe === undefined || this.lastHitTime - this.lastAllyGripe > 8) {
+        this.lastAllyGripe = this.lastHitTime;
+        this.game.comm.say('He! Falsches Ziel, Pilot! Wir sind auf deiner Seite!', { speaker: this.name, faction: this.look, seed: this.pos.x, duration: 3000 });
+      }
+    } else if (attacker === ship) {
       this.aggro = this.faction !== 'civil';
       law.reportHit(this);
       this.game.hud.hitMarker(this.shield <= 0);
@@ -610,6 +620,8 @@ export class NPCManager {
     const { ship, law } = this.game;
     if (b === ship || a === ship) {
       const npc = a === ship ? b : a;
+      if (npc.ally) return false;
+      if (npc.faction === 'rogue') return !(npc.wing && npc.wing.truce);
       if (npc.wing && npc.wing.aggro && npc.faction !== 'civil') return true;
       if (npc.aggro && npc.faction !== 'police') return true;
       if (npc.wing && npc.wing.truce) return false;
@@ -618,6 +630,11 @@ export class NPCManager {
       return false;
     }
     if (a.faction === b.faction) return false;
+    // Turncoats fight the police and the Aschebund alike, and the pilot's wingmen fight them
+    if (a.faction === 'rogue' || b.faction === 'rogue') {
+      const other = a.faction === 'rogue' ? b : a;
+      return other.faction === 'police' || other.faction === 'pirate' || !!other.ally || !!other.hunted;
+    }
     if ((a.faction === 'pirate' && b.faction === 'police') || (a.faction === 'police' && b.faction === 'pirate')) return true;
     if (a.faction === 'pirate' && b.faction === 'civil') return a.raider;
     if (b.faction === 'pirate' && a.faction === 'civil') return b.raider;
