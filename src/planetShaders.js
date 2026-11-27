@@ -1264,24 +1264,40 @@ void main() {
 }
 `;
 
+// The Sun as it looks from space: nearly white (the air makes it yellow from the ground), only a touch warm here, and
+// brighter than anything else. Up close, with the disc filling the view and
+// the exposure stepped down (uSunHDR, see planets.js), the photosphere shows: granulation, a dimmer and warmer limb
+// (limb darkening is strongest in blue), bright faculae near the limb, and sunspot groups only in the two activity
+// belts either side of the equator.
 export const SUN_FRAGMENT = NOISE_GLSL + BODY_UNIFORMS + /* glsl */ `
 #include <logdepthbuf_pars_fragment>
+uniform float uSunHDR;
 void main() {
   vec3 n = normalize(vRel);
   vec3 o = normalize(vObj);
   vec3 V = normalize(uCamLocal - vRel);
   float mu = clamp(dot(n, V), 0.0, 1.0);
   float t = uTime;
-  float gran = fbm(o * 46.0 + vec3(0.0, t * 0.02, t * 0.013), 4);
-  float cells = 1.0 - abs(snoise(o * 120.0 + vec3(t * 0.04)));
-  float large = fbm(o * 5.0 + vec3(t * 0.004), 3);
-  float spots = smoothstep(0.38, 0.5, fbm(o * 7.0 + vec3(30.0, 0.0, t * 0.001), 4)) * smoothstep(0.75, 0.3, abs(o.y));
-  float I = 1.0 + 0.3 * gran + 0.16 * cells + 0.18 * large;
-  I *= 1.0 - 0.8 * spots;
-  float limb = 0.3 + 0.7 * pow(mu, 0.5);
-  vec3 hot = vec3(1.0, 0.8, 0.5);
-  vec3 cool = vec3(1.0, 0.4, 0.1);
-  gl_FragColor = vec4(mix(cool, hot, limb) * I * limb, 1.0);
+  // Granules: bright cells with dark lanes between them, slowly boiling
+  float cells = 1.0 - abs(snoise(o * 140.0 + vec3(t * 0.03, 0.0, t * 0.021)));
+  float gran = fbm(o * 60.0 + vec3(0.0, t * 0.015, t * 0.011), 3);
+  float large = fbm(o * 6.0 + vec3(t * 0.003), 3);
+  float I = 1.0 + 0.1 * gran + 0.12 * (cells - 0.6) + 0.06 * large;
+  // Sunspot groups in the belts about 8-35 degrees north and south: dark umbra inside a greyer penumbra
+  float lat = abs(o.y);
+  float belt = smoothstep(0.12, 0.2, lat) * smoothstep(0.6, 0.45, lat);
+  float group = smoothstep(0.12, 0.32, fbm(o * 4.0 + vec3(11.0, 0.0, t * 0.0007), 3)) * belt;
+  float s = snoise(o * 34.0 + vec3(3.0, 7.0, t * 0.001)) * 0.7 + snoise(o * 85.0) * 0.3;
+  float penumbra = smoothstep(0.34, 0.46, s) * group;
+  float umbra = smoothstep(0.52, 0.62, s) * group;
+  I *= 1.0 - 0.4 * penumbra - 0.5 * umbra;
+  // Faculae: bright magnetic patches around the groups, seen only towards the limb
+  I *= 1.0 + 0.3 * group * (1.0 - mu) * (0.6 + 0.4 * cells);
+  // Limb darkening I(mu) = 1 - u (1 - mu^a), stronger for shorter wavelengths: the edge is dimmer and warmer
+  vec3 u = vec3(0.56, 0.67, 0.80);
+  vec3 limb = 1.0 - u * (1.0 - pow(vec3(mu), vec3(0.6)));
+  vec3 white = vec3(1.0, 0.95, 0.86);
+  gl_FragColor = vec4(white * limb * I * uSunHDR, 1.0);
   #include <logdepthbuf_fragment>
 }
 `;

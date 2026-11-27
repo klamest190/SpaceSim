@@ -18,7 +18,7 @@ const AIM_ASSIST = THREE.MathUtils.degToRad(2.6); // the guns gimbal this far on
 const SHIELD_DELAY = 3.0;      // seconds after a hit before shields recharge
 const STICK_RESPONSE = 13;     // how quickly the nose follows the mouse
 const STICK_LIMIT = 0.5;       // radians of steering the mouse can queue up
-const BOOST_DRAIN = 12.5;    // a full tank burns for 8 seconds
+const BOOST_DRAIN = 12.5 / 3; // a full tank burns for 24 seconds
 const BOOST_RECHARGE = 13;
 const BOOST_SPEED = 7.5;   // afterburner top speed, times the normal one
 

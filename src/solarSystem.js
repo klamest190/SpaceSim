@@ -389,6 +389,11 @@ const FILL_TINT = {
   Moon: 0x9c9a94, Io: 0xd8c070, Europa: 0xd8d0c0, Titan: 0xd09040,
   Ganymede: 0xa89c8c, Callisto: 0x6a5c4c, Enceladus: 0xf0f4f8, Triton: 0xc8b8b8,
 };
+// How much of the sunlight each body throws back (Bond albedo): Venus's clouds glare, the Moon is dark as asphalt
+const ALBEDO = {
+  Mercury: 0.09, Venus: 0.76, Earth: 0.3, Mars: 0.25, Jupiter: 0.5, Saturn: 0.34, Uranus: 0.3, Neptune: 0.29,
+  Moon: 0.11, Io: 0.63, Europa: 0.68, Titan: 0.27, Ganymede: 0.43, Callisto: 0.22, Enceladus: 0.81, Triton: 0.76,
+};
 
 // The stars: round soft points, sized and lit by magnitude; uGain is the eyes' adaptation. They never twinkle:
 // there is no air out here to make them.
@@ -1126,6 +1131,9 @@ export class SolarSystem {
     const vis = this.sunVisibilityAt(shipPos);
     this.sunVisibility = vis;
     this.sunLight.intensity = SUN_INTENSITY * vis;
+    // With the disc covered the corona comes out around the dark limb (the glare that drowned it is gone)
+    const corona = this.planets[0].body.corona;
+    if (corona) corona.material.opacity = THREE.MathUtils.lerp(1, 0.25, vis);
   }
 
   // Share of the Sun's disc visible from a point (skipping the body the point belongs to)
@@ -1176,7 +1184,7 @@ export class SolarSystem {
     const toSun = best.group.position.clone().negate().normalize();
     const dayside = THREE.MathUtils.clamp(0.5 + 0.5 * up.dot(toSun), 0, 1);
     this.fillLight.color.set(FILL_TINT[best.name] || 0xb0b8c8);
-    this.fillLight.intensity = 0.9 * bestStrength * dayside;
+    this.fillLight.intensity = SUN_INTENSITY * 1.15 * (ALBEDO[best.name] ?? 0.3) * bestStrength * dayside;
     this.fillLight.position.copy(best.group.position).addScaledVector(up, best.radius);
     this.fillLight.target.position.copy(shipPos);
   }

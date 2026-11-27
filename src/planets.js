@@ -8,6 +8,11 @@ import {
 const BAKE_SCALE = THREE.MathUtils.clamp(Number(new URLSearchParams(window.location.search).get('bake')) || 1, 0.03125, 1);
 const BAKE_STRIPS = 8; // maps are baked strip by strip, so a slow GPU never stalls on one huge draw
 const SUN_RADIUS = 180; // drawn radius of the Sun, for the size of its disc in eclipses
+// Brightness of the Sun's disc in the HDR image: just above white in the middle, so it dazzles a little without the
+// bloom swallowing the view, while the darker limb stays readable (the glare around it is drawn by glare.js); stepped
+// down when the disc fills the view so its surface can be made out
+export const SUN_HDR_FAR = 1.25;
+const SUN_HDR_NEAR = 0.95;
 
 const SURFACE_DEFINES = {
   Mercury: { MERCURY: '', HEIGHT_IN_ALPHA: '' },
@@ -209,7 +214,8 @@ function createRingTexture(name, range) {
   return tex;
 }
 
-// The Sun's corona: soft glow with faint streamers
+// The Sun's corona: pearly white, a soft glow with faint streamers. Drowned by the glare while the disc shows,
+// it stands out when a planet or moon covers the Sun (see PlanetBody.updateView)
 function createCoronaTexture() {
   const size = 512;
   const canvas = document.createElement('canvas');
@@ -220,11 +226,11 @@ function createCoronaTexture() {
   // The disc covers the inner 44 % of the sprite; the glow starts at its rim and falls off fast
   const disc = 0.44;
   const glow = ctx.createRadialGradient(c, c, 0, c, c, c);
-  glow.addColorStop(0, 'rgba(255,240,215,1)');
-  glow.addColorStop(disc, 'rgba(255,225,180,0.9)');
-  glow.addColorStop(disc + 0.04, 'rgba(255,190,120,0.35)');
-  glow.addColorStop(0.62, 'rgba(255,150,70,0.09)');
-  glow.addColorStop(0.82, 'rgba(255,120,50,0.02)');
+  glow.addColorStop(0, 'rgba(255,252,245,1)');
+  glow.addColorStop(disc, 'rgba(255,248,238,0.9)');
+  glow.addColorStop(disc + 0.04, 'rgba(250,244,236,0.35)');
+  glow.addColorStop(0.62, 'rgba(238,236,240,0.09)');
+  glow.addColorStop(0.82, 'rgba(225,228,240,0.02)');
   glow.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.fillStyle = glow;
   ctx.fillRect(0, 0, size, size);
@@ -239,8 +245,8 @@ function createCoronaTexture() {
     const x1 = c + Math.cos(a) * (r0 + len);
     const y1 = c + Math.sin(a) * (r0 + len);
     const grad = ctx.createLinearGradient(x0, y0, x1, y1);
-    grad.addColorStop(0, 'rgba(255,200,150,0.12)');
-    grad.addColorStop(1, 'rgba(255,160,90,0)');
+    grad.addColorStop(0, 'rgba(250,248,255,0.12)');
+    grad.addColorStop(1, 'rgba(230,235,255,0)');
     ctx.strokeStyle = grad;
     ctx.lineWidth = 3 + hash1(i + 9) * 8;
     ctx.beginPath();
@@ -321,6 +327,7 @@ export class PlanetBody {
     }
 
     if (this.isSun) {
+      u.uSunHDR = { value: SUN_HDR_FAR };
       this.mesh = new THREE.Mesh(
         new THREE.SphereGeometry(1, 128, 64),
         new THREE.ShaderMaterial({ uniforms: u, vertexShader: BODY_VERTEX, fragmentShader: SUN_FRAGMENT })
@@ -329,7 +336,7 @@ export class PlanetBody {
       this.tilt.add(this.mesh);
       const corona = new THREE.Sprite(new THREE.SpriteMaterial({
         map: createCoronaTexture(),
-        color: new THREE.Color(0.7, 0.5, 0.3),
+        color: new THREE.Color(0.6, 0.56, 0.5),
         blending: THREE.AdditiveBlending,
         transparent: true,
         depthWrite: false
@@ -457,7 +464,14 @@ export class PlanetBody {
     const u = this.uniforms;
     const center = this.group.position;
     u.uCamLocal.value.copy(camera.position).sub(center);
-    if (this.isSun) return;
+    if (this.isSun) {
+      // The share of the view the disc fills: small, it is a blinding point; filling the view, the eyes (or a
+      // filter) step down so the photosphere shows
+      const ang = Math.asin(Math.min(1, this.radius / Math.max(u.uCamLocal.value.length(), this.radius)));
+      const fill = ang / THREE.MathUtils.degToRad(camera.fov / 2);
+      u.uSunHDR.value = THREE.MathUtils.lerp(SUN_HDR_FAR, SUN_HDR_NEAR, THREE.MathUtils.smoothstep(fill, 0.03, 0.5));
+      return;
+    }
     u.uSunDir.value.copy(center).negate().normalize();
     u.uSunAng.value = Math.asin(Math.min(1, SUN_RADIUS / Math.max(center.length(), SUN_RADIUS)));
     this.mesh.getWorldQuaternion(_q).invert();

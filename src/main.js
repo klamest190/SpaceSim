@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { controls } from './controls';
 import { spaceAudio } from './audio';
@@ -26,6 +27,7 @@ import { MissileCam } from './missileCam';
 import { GOODS, emptyCargo, STARTING_DEBT } from './world';
 import { DIFFICULTIES, difficultyOf } from './difficulty';
 import { EyeAdaptation } from './exposure';
+import { SunGlare } from './glare';
 import { SolarStorm } from './solarStorm';
 import { Thermal } from './heat';
 import { Aero } from './aero';
@@ -148,13 +150,20 @@ class Game {
     this.renderer.toneMapping = THREE.NeutralToneMapping;
     this.renderer.toneMappingExposure = 1.25;
 
-    // Post-processing: only HDR sources (sun, lasers, explosion cores) cross the bloom threshold
+    // Post-processing. The canvas's own antialiasing does not reach the composer's buffers, so edges are smoothed at
+    // the end by SMAA. (Not by multisampling the HDR buffers: the planet shaders then get run at points just off
+    // their discs, and the odd NaN they return there is smeared over the whole screen by the bloom.)
     this.composer = new EffectComposer(this.renderer);
     this.renderPass = new RenderPass(this.scene, this.camera);
     this.composer.addPass(this.renderPass);
-    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.75, 0.5, 0.9);
+    // Only what is brighter than white blooms (Sun, lasers, explosion cores, engine plasma)
+    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.6, 0.5, 1.0);
     this.composer.addPass(this.bloomPass);
+    // The Sun's glare in the eye and on the canopy, after the bloom so it is not blown up a second time
+    this.glare = new SunGlare();
+    this.composer.addPass(this.glare.pass);
     this.composer.addPass(new OutputPass());
+    this.composer.addPass(new SMAAPass());
   }
 
   // ----- career --------------------------------------------------------------------------------
@@ -972,6 +981,7 @@ class Game {
       this.ringField.updateView(this.camera, this.renderer);
     }
     this.eyes.update(delta);
+    this.glare.update(this);
     // Inside a station the painted interior covers the screen: no need to render space behind it
     if (!(this.ship.isDocked && this.ui.stationUI.isOpen)) this.composer.render(delta);
     if (this.photo.active) this.photo.afterRender();
