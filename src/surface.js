@@ -21,7 +21,9 @@ import { SurfaceAurora } from './surfaceAurora';
 export const METERS_PER_UNIT = 6;
 const START_Y = 2600;       // the ship comes out of re-entry this high (local units)
 const EXIT_Y = 3400;        // climbing above this returns to space
-const SPEED_SCALE = 2.5;    // in the air the engines push the ship faster than in open space
+// In the air the engines push the ship 1.25x its space top speed (space speed itself is doubled in spaceship.js,
+// so flying low stays as fast as it was)
+const SPEED_SCALE = 1.25;
 const CLEARANCE = 1.0;      // the ship's belly over its centre
 const LAND_SPEED = 7;       // touching down slower than this (into the ground) is a landing
 const LAND_DRIFT = 16;      // ... and with less sideways speed than this

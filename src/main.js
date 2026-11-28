@@ -288,7 +288,7 @@ class Game {
       .applyAxisAngle(up, THREE.MathUtils.degToRad(55))
       .addScaledVector(up, 0.12)
       .normalize();
-    this.ship.position.copy(earth.currentPos).addScaledVector(out, earth.radius * 1.75);
+    this.ship.position.copy(earth.currentPos).addScaledVector(out, earth.data.baseRadius * 1.75);
     if (earthStation) {
       earthStation.orbitAngle = Math.atan2(out.z, out.x) + 0.32;
       this.solarSystem.update(0);
@@ -388,6 +388,10 @@ class Game {
     });
 
     controls.onPress('x', () => this.flyToTarget());
+
+    // Pos1 (or the soft key under the target VDU): Earth as target, so the way home is one key away
+    controls.onPress('home', () => this.targetHome());
+    document.getElementById('btn-home-target').addEventListener('click', () => this.targetHome());
 
     controls.onPress('g', () => {
       if (!this.simRunning || this.ship.isDestroyed || this.ui.navMap.isOpen || this.paused) return;
@@ -540,6 +544,17 @@ class Game {
     if (ship.targetObject && ship.targetObject.kind === 'npc' && ship.targetObject.alive && aimed.kind !== 'npc') return;
     if (ship.targetObject && this.isInSight(ship.targetObject, forward)) return;
     this.setTarget(aimed);
+  }
+
+  targetHome() {
+    if (!this.flying()) return;
+    const earth = this.solarSystem.planets.find((p) => p.name === 'Earth');
+    this.setTarget(earth);
+    spaceAudio.playBeep();
+    this.hud.toast('Ziel: Erde · [X] Hinfliegen', 'info');
+    const btn = document.getElementById('btn-home-target');
+    btn.classList.add('flash');
+    setTimeout(() => btn.classList.remove('flash'), 180);
   }
 
   setTarget(target) {

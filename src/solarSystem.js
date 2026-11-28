@@ -383,6 +383,19 @@ export const MOON_DATA = [
   }
 ];
 
+// Scale: orbits are true (1 unit = 100.000 km). Bodies are drawn larger than true so they read as worlds, but less
+// than they used to be: planets and moons at half their old size (about 750x true for the gas giants, 800-1300x
+// for the rocky worlds), the Sun grown to 45x true. That brings the Sun / planet ratio a good deal closer to the
+// real one while stations (24 units) stay clearly smaller than the worlds they circle.
+// baseRadius keeps the old size: station orbits and the spawn point are measured in it, so they keep their
+// distances and don't sink into the smaller worlds. Surface gravity stays as it was, so flying low feels the same.
+export const PLANET_SIZE = 0.5;
+export const SUN_SIZE = 45;
+[...PLANET_DATA, ...MOON_DATA].forEach((d) => {
+  d.baseRadius = d.radius;
+  d.radius = d.name === 'Sun' ? Math.round((d.realRadius * SUN_SIZE) / 100000) : d.radius * PLANET_SIZE;
+});
+
 const SUN_INTENSITY = 2.6;
 
 // Average colour of each body's sunlit face, for the light it reflects onto nearby ships
@@ -832,7 +845,7 @@ export class SolarSystem {
       // Stations named after a moon circle that moon; planetIndex then points at the moon in the body list
       const bodyIndex = def.moon ? this.planets.findIndex((p) => p.name === def.moon) : def.planetIndex;
       const parent = this.planets[bodyIndex];
-      const orbitRadius = def.planetIndex === 0 ? def.orbitRadius : parent.radius * def.orbit;
+      const orbitRadius = def.planetIndex === 0 ? def.orbitRadius : parent.data.baseRadius * def.orbit;
       const st = {
         name: def.name,
         kind: 'station',

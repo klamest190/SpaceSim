@@ -20,7 +20,11 @@ const STICK_RESPONSE = 13;     // how quickly the nose follows the mouse
 const STICK_LIMIT = 0.5;       // radians of steering the mouse can queue up
 const BOOST_DRAIN = 12.5 / 3; // a full tank burns for 24 seconds
 const BOOST_RECHARGE = 13;
-const BOOST_SPEED = 7.5;   // afterburner top speed, times the normal one
+// Normal top speed and thrust in open space, times the engine tier's base values (doubled on 2026-11-28)
+const SPACE_SPEED = 2;
+// Afterburner top speed, times the normal one: halved with the doubled normal speed, so the afterburner itself
+// is as fast as before
+const BOOST_SPEED = 3.75;
 
 // Stations differ in size, so the distances around them follow: waiting point, docking range, closest approach
 export const stationHoldStandoff = (st) => st.size + 24;
@@ -206,6 +210,9 @@ export class Spaceship {
       this.acceleration = 80;
       this.turnRate = 2.5;
     }
+
+    this.maxSpeed *= SPACE_SPEED;
+    this.acceleration *= SPACE_SPEED;
 
     // 2. Shield
     const shieldTier = this.upgrades.shield;

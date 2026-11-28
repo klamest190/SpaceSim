@@ -1253,6 +1253,49 @@ button:focus-visible {
   font-size: 1.05rem;
 }
 
+/* Keys for the target VDU, and a soft key that locks Earth */
+.target-keys {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 0.95rem;
+}
+
+.target-keys-hint {
+  color: var(--phosphor-dim);
+  white-space: nowrap;
+}
+
+.vdu-btn {
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1;
+  padding: 3px 6px 2px;
+  color: var(--phosphor);
+  background: rgba(92, 255, 122, 0.06);
+  border: 1px solid rgba(92, 255, 122, 0.45);
+  border-radius: 2px;
+  text-shadow: 0 0 4px rgba(92, 255, 122, 0.6);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.vdu-btn:hover { background: rgba(92, 255, 122, 0.16); }
+.vdu-btn:active, .vdu-btn.flash { background: rgba(92, 255, 122, 0.32); color: #eaffef; }
+
+/* On narrower screens the side VDUs get tight: keep only the soft key, in short */
+@media (max-width: 1440px) {
+  .target-keys-hint, .vdu-long { display: none; }
+  .target-keys { margin-top: 3px; }
+  .vdu-btn { font-size: 0.85rem; padding: 2px 4px 1px; }
+  /* the wireframe gives up some room so the distance fits on one line */
+  .target-vdu { grid-template-columns: minmax(0, 38%) 1fr; gap: 8px; }
+  .target-screen-container { width: 100%; height: auto; }
+}
+
 /* ---- Centre binnacle -------------------------------------------------------- */
 
 .binnacle {

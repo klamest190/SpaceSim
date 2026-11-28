@@ -12,7 +12,7 @@ const BAKE_STRIPS = 8; // maps are baked strip by strip, so a slow GPU never sta
 // sharper from close up at the cost of video memory and a longer start; read once, applies after a restart
 const PLANET_DETAIL = loadSettings().planetDetail === 'high' ? 2 : 1;
 const MULTI_SCAT_SIZE = 32;
-const SUN_RADIUS = 180; // drawn radius of the Sun, for the size of its disc in eclipses
+let SUN_RADIUS = 313; // drawn radius of the Sun, for the size of its disc in eclipses (set from its data)
 // Brightness of the Sun's disc in the HDR image: just above white in the middle, so it dazzles a little without the
 // bloom swallowing the view, while the darker limb stays readable (the glare around it is drawn by glare.js); stepped
 // down when the disc fills the view so its surface can be made out
@@ -312,6 +312,7 @@ export class PlanetBody {
     this.ground = undefined; // baked on the first flight over this body (see groundData)
     this.radius = data.radius;
     this.isSun = data.name === 'Sun';
+    if (this.isSun) SUN_RADIUS = data.radius;
     this.group = new THREE.Group();
     this.tilt = new THREE.Group();
     this.tilt.rotation.z = THREE.MathUtils.degToRad(data.tilt || 0);

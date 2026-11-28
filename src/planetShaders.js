@@ -171,8 +171,9 @@ float ozoneDensity(float h) { return max(0.0, 1.0 - abs(h / uHR - 3.1) / 1.9); }
 // in planets.js). It brightens the day sky a little and fills the twilight past the terminator.
 #ifdef MULTI_SCAT
 uniform sampler2D uMultiScat;
-vec3 multiScat(float h, float muS) {
-  vec2 uv = vec2(clamp(muS * 0.5 + 0.5, 0.0, 1.0), clamp(h / (uAtmoTop - uRadius), 0.0, 1.0));
+// radius passed in: the surface-flight shaders declare uRadius only after this code
+vec3 multiScat(float h, float muS, float radius) {
+  vec2 uv = vec2(clamp(muS * 0.5 + 0.5, 0.0, 1.0), clamp(h / (uAtmoTop - radius), 0.0, 1.0));
   uv = (uv * 31.0 + 0.5) / 32.0;
   return textureLod(uMultiScat, uv, 0.0).rgb; // explicit level: called inside the ray loop
 }
@@ -224,7 +225,7 @@ void atmosphere(vec3 ro, vec3 rd, float tMax, vec3 sunDir, float radius, out vec
     float r = length(p);
     float muS = dot(p / r, sunDir);
 #ifdef MULTI_SCAT
-    sumMS += exp(-(uBetaR * midR + MIE_EXT * midM + OZONE_EXT(midO))) * (uBetaR * dR + MIE_SCA * dM) * multiScat(h, muS);
+    sumMS += exp(-(uBetaR * midR + MIE_EXT * midM + OZONE_EXT(midO))) * (uBetaR * dR + MIE_SCA * dM) * multiScat(h, muS, radius);
 #endif
     // Points in the planet's shadow get no sunlight; the edge is soft, like a real terminator
     float horizonCos = -sqrt(max(0.0, 1.0 - (radius * radius) / (r * r)));

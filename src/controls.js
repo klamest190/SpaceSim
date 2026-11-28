@@ -290,6 +290,10 @@ class Controls {
       case 'KeyU':
         keyTriggered = 'u';
         break;
+      // Pos1 / Home: lock Earth, the way home
+      case 'Home':
+        keyTriggered = 'home';
+        break;
 
       // Menu navigation (nav computer)
       case 'ArrowUp':
