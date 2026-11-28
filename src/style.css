@@ -2616,6 +2616,7 @@ button:focus-visible {
 
 .setting input[type="range"] { flex: 1; accent-color: var(--phosphor); }
 .setting input[type="checkbox"] { accent-color: var(--phosphor); width: 16px; height: 16px; }
+.setting select { flex: 1; background: #0b120c; color: var(--phosphor); border: 1px solid currentColor; font: inherit; padding: 2px 4px; }
 
 .rep-bar {
   display: inline-block;

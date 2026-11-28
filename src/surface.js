@@ -225,7 +225,7 @@ export class SurfaceFlight {
         // Shared with the planet as seen from space: maps, light, atmosphere
         uColorMap: bu.uColorMap, uAuxMap: bu.uAuxMap, uCloudShift: bu.uCloudShift, uLight: bu.uLight,
         uRadius: bu.uRadius, uAtmoTop: bu.uAtmoTop, uHR: bu.uHR, uHM: bu.uHM, uBetaR: bu.uBetaR,
-        uBetaM: bu.uBetaM, uMieG: bu.uMieG, uSunE: bu.uSunE,
+        uBetaM: bu.uBetaM, uMieG: bu.uMieG, uSunE: bu.uSunE, uMultiScat: bu.uMultiScat, uOzone: bu.uOzone,
         // The plane
         uCenter: { value: new THREE.Vector3() }, uEast: { value: new THREE.Vector3() }, uSouth: { value: new THREE.Vector3() },
         uRmap: { value: world.rMap }, uK: { value: k }, uCurvR: { value: p.radius / k },
@@ -241,6 +241,12 @@ export class SurfaceFlight {
       if (atmo && !world.deck) groundDefines.HAS_ATMO = '';
       const skyDefines = { ...world.defines };
       if (atmo) skyDefines.HAS_ATMO = '';
+      // Multiple scattering and ozone as seen from space (planets.js), where that planet has them
+      const extra = {};
+      if (p.body.atmoDefines && 'MULTI_SCAT' in p.body.atmoDefines) extra.MULTI_SCAT = '';
+      if (p.body.atmoDefines && 'OZONE' in p.body.atmoDefines) extra.OZONE = '';
+      if (atmo && !world.deck) Object.assign(groundDefines, extra);
+      if (atmo) Object.assign(skyDefines, extra);
       this.materials[p.name] = {
         uniforms,
         terrain: new THREE.ShaderMaterial({

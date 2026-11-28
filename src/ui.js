@@ -314,6 +314,16 @@ export class UI {
     sound.addEventListener('change', () => { s.sound = sound.checked; spaceAudio.setMute(!s.sound); this.game.applySettings(); });
     musicBox.addEventListener('change', () => { s.music = musicBox.checked; this.game.applySettings(); });
     musicVol.addEventListener('input', () => { s.musicVolume = Number(musicVol.value); this.game.applySettings(); });
+    // Planet maps are baked at the start, so a change shows after a restart (planets.js reads the saved setting)
+    const detail = document.getElementById('set-planet-detail');
+    const detailHint = document.getElementById('set-planet-detail-hint');
+    const detailAtStart = s.planetDetail === 'high' ? 'high' : 'normal';
+    detail.value = detailAtStart;
+    detail.addEventListener('change', () => {
+      s.planetDetail = detail.value;
+      detailHint.hidden = detail.value === detailAtStart;
+      this.game.applySettings();
+    });
     this.pauseScreen.addEventListener('click', (e) => {
       const b = e.target.closest('[data-pact]');
       if (!b) return;

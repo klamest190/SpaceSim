@@ -156,6 +156,28 @@ uniform vec3 uMieExt;
 #define MIE_EXT vec3(uBetaM * 1.1)
 #endif
 
+// Ozone (Earth): absorbs orange and red, scatters nothing. A layer centred about 3 Rayleigh scale heights up; it
+// is what keeps the twilight sky blue overhead instead of grey-violet
+#ifdef OZONE
+uniform vec3 uOzone;
+float ozoneDensity(float h) { return max(0.0, 1.0 - abs(h / uHR - 3.1) / 1.9); }
+#define OZONE_EXT(o) (uOzone * (o))
+#else
+#define OZONE_EXT(o) vec3(0.0)
+#endif
+
+// Light scattered more than once (Hillaire 2020): a small table per planet holds, for each height and Sun
+// elevation, the light arriving from all directions after two and more bounces, ground included (bakeMultiScatter
+// in planets.js). It brightens the day sky a little and fills the twilight past the terminator.
+#ifdef MULTI_SCAT
+uniform sampler2D uMultiScat;
+vec3 multiScat(float h, float muS) {
+  vec2 uv = vec2(clamp(muS * 0.5 + 0.5, 0.0, 1.0), clamp(h / (uAtmoTop - uRadius), 0.0, 1.0));
+  uv = (uv * 31.0 + 0.5) / 32.0;
+  return textureLod(uMultiScat, uv, 0.0).rgb; // explicit level: called inside the ray loop
+}
+#endif
+
 void atmosphere(vec3 ro, vec3 rd, float tMax, vec3 sunDir, float radius, out vec3 inscatter, out vec3 transmit) {
   inscatter = vec3(0.0);
   transmit = vec3(1.0);
@@ -166,8 +188,10 @@ void atmosphere(vec3 ro, vec3 rd, float tMax, vec3 sunDir, float radius, out vec
 
   float odR = 0.0;
   float odM = 0.0;
+  float odO = 0.0;
   vec3 sumR = vec3(0.0);
   vec3 sumM = vec3(0.0);
+  vec3 sumMS = vec3(0.0);
 #ifdef ATMO_FIXED_STEP
   // Equal steps for every ray, so a deep haze looks the same just inside and just outside the solid disc
   float ds = 2.0 * sqrt(uAtmoTop * uAtmoTop - radius * radius) / float(ATMO_STEPS);
@@ -185,23 +209,41 @@ void atmosphere(vec3 ro, vec3 rd, float tMax, vec3 sunDir, float radius, out vec
     float h = max(length(p) - radius, 0.0);
     float dR = exp(-h / uHR) * seg;
     float dM = exp(-h / uHM) * seg;
+    // Optical depth up to the middle of the step: the light scattered here is dimmed by the half step before it too
+    float midR = odR + 0.5 * dR;
+    float midM = odM + 0.5 * dM;
     odR += dR;
     odM += dM;
-    // Points in the planet's shadow get no sunlight; the edge is soft, like a real terminator
+#ifdef OZONE
+    float dO = ozoneDensity(h) * seg;
+    float midO = odO + 0.5 * dO;
+    odO += dO;
+#else
+    float midO = 0.0;
+#endif
     float r = length(p);
+    float muS = dot(p / r, sunDir);
+#ifdef MULTI_SCAT
+    sumMS += exp(-(uBetaR * midR + MIE_EXT * midM + OZONE_EXT(midO))) * (uBetaR * dR + MIE_SCA * dM) * multiScat(h, muS);
+#endif
+    // Points in the planet's shadow get no sunlight; the edge is soft, like a real terminator
     float horizonCos = -sqrt(max(0.0, 1.0 - (radius * radius) / (r * r)));
-    float sunVis = smoothstep(horizonCos - 0.01, horizonCos + 0.05, dot(p / r, sunDir));
+    float sunVis = smoothstep(horizonCos - 0.01, horizonCos + 0.05, muS);
     if (sunVis > 0.0) {
       float tl = raySphere(p, sunDir, uAtmoTop).y;
       float dsl = tl / 4.0;
       float lR = 0.0;
       float lM = 0.0;
+      float lO = 0.0;
       for (int j = 0; j < 4; j++) {
         float hq = max(length(p + sunDir * ((float(j) + 0.5) * dsl)) - radius, 0.0);
         lR += exp(-hq / uHR) * dsl;
         lM += exp(-hq / uHM) * dsl;
+#ifdef OZONE
+        lO += ozoneDensity(hq) * dsl;
+#endif
       }
-      vec3 att = exp(-(uBetaR * (odR + lR) + MIE_EXT * (odM + lM))) * sunVis;
+      vec3 att = exp(-(uBetaR * (midR + lR) + MIE_EXT * (midM + lM) + OZONE_EXT(midO + lO))) * sunVis;
       sumR += dR * att;
       sumM += dM * att;
     }
@@ -210,8 +252,102 @@ void atmosphere(vec3 ro, vec3 rd, float tMax, vec3 sunDir, float radius, out vec
   float phaseR = 3.0 / (16.0 * PI) * (1.0 + mu * mu);
   float g = uMieG;
   float phaseM = 3.0 / (8.0 * PI) * ((1.0 - g * g) * (1.0 + mu * mu)) / ((2.0 + g * g) * pow(1.0 + g * g - 2.0 * g * mu, 1.5));
-  inscatter = uSunE * (sumR * uBetaR * phaseR + sumM * MIE_SCA * phaseM);
-  transmit = exp(-(uBetaR * odR + MIE_EXT * odM));
+  inscatter = uSunE * (sumR * uBetaR * phaseR + sumM * MIE_SCA * phaseM + sumMS);
+  transmit = exp(-(uBetaR * odR + MIE_EXT * odM + OZONE_EXT(odO)));
+}
+
+`;
+
+// The table for multiScat(): x = Sun elevation cosine (-1..1), y = height (ground..top). For each texel, light from
+// 64 directions is gathered: single-scattered sunlight along each ray with an even phase function plus sunlight off
+// the ground (Lambert, uGroundAlbedo), giving the second order L2 and the share f of light scattered again; all
+// higher orders follow as the series L2 * (1 + f + f^2 + ...) = L2 / (1 - f). Units: per unit sun illuminance.
+export const MULTI_SCAT_FRAGMENT = RAY_SPHERE + /* glsl */ `
+uniform float uRadius;
+uniform float uAtmoTop;
+uniform float uHR;
+uniform float uHM;
+uniform vec3 uBetaR;
+uniform float uBetaM;
+uniform vec3 uGroundAlbedo;
+uniform float uMsScale;
+varying vec2 vUv;
+const float PI = 3.141592653589793;
+#ifdef MIE_TINT
+uniform vec3 uMieCol;
+uniform vec3 uMieExt;
+#define MIE_SCA (uBetaM * uMieCol)
+#define MIE_EXT (uBetaM * uMieExt)
+#else
+#define MIE_SCA vec3(uBetaM)
+#define MIE_EXT vec3(uBetaM * 1.1)
+#endif
+#define DIRS 64
+#define STEPS 20
+
+vec3 extinctionAt(float h) {
+  return uBetaR * exp(-h / uHR) + MIE_EXT * exp(-h / uHM);
+}
+vec3 scatteringAt(float h) {
+  return uBetaR * exp(-h / uHR) + MIE_SCA * exp(-h / uHM);
+}
+// Transmittance from p towards the Sun, zero if the planet is in the way
+vec3 sunTransmit(vec3 p, vec3 L) {
+  if (hitsSphere(p, L, uRadius)) return vec3(0.0);
+  float t = raySphere(p, L, uAtmoTop).y;
+  float ds = t / 8.0;
+  vec3 od = vec3(0.0);
+  for (int j = 0; j < 8; j++) {
+    float h = max(length(p + L * ((float(j) + 0.5) * ds)) - uRadius, 0.0);
+    od += extinctionAt(h) * ds;
+  }
+  return exp(-od);
+}
+
+void main() {
+  float muS = vUv.x * 2.0 - 1.0;
+  float h = mix(0.002, 0.998, vUv.y) * (uAtmoTop - uRadius);
+  vec3 p = vec3(0.0, uRadius + h, 0.0);
+  vec3 L = vec3(sqrt(max(0.0, 1.0 - muS * muS)), muS, 0.0);
+  vec3 L2 = vec3(0.0);
+  vec3 fms = vec3(0.0);
+  for (int i = 0; i < DIRS; i++) {
+    // Even spread over the sphere (Fibonacci)
+    float y = 1.0 - 2.0 * (float(i) + 0.5) / float(DIRS);
+    float rad = sqrt(max(0.0, 1.0 - y * y));
+    float phi = float(i) * 2.399963229728653;
+    vec3 rd = vec3(cos(phi) * rad, y, sin(phi) * rad);
+    vec2 tg = raySphere(p, rd, uRadius);
+    bool ground = tg.x <= tg.y && tg.x > 0.0;
+    float tEnd = ground ? tg.x : raySphere(p, rd, uAtmoTop).y;
+    float ds = tEnd / float(STEPS);
+    vec3 T = vec3(1.0);
+    vec3 lum = vec3(0.0);
+    vec3 f = vec3(0.0);
+    for (int k = 0; k < STEPS; k++) {
+      vec3 q = p + rd * ((float(k) + 0.5) * ds);
+      float hq = max(length(q) - uRadius, 0.0);
+      vec3 ext = extinctionAt(hq);
+      vec3 sca = scatteringAt(hq);
+      vec3 stepT = exp(-ext * ds);
+      // Integrated analytically over the step (energy-conserving, as in Hillaire's paper)
+      vec3 integ = (vec3(1.0) - stepT) / max(ext, vec3(1e-12));
+      lum += T * sca * integ * sunTransmit(q, L) / (4.0 * PI);
+      f += T * sca * integ;
+      T *= stepT;
+    }
+    if (ground) {
+      vec3 g = p + rd * tEnd;
+      vec3 n = normalize(g);
+      lum += T * sunTransmit(g + n * 1e-4 * uRadius, L) * max(dot(n, L), 0.0) * uGroundAlbedo / PI;
+    }
+    L2 += lum;
+    fms += f;
+  }
+  L2 /= float(DIRS);
+  fms /= float(DIRS);
+  vec3 psi = L2 / (vec3(1.0) - min(fms, vec3(0.92)));
+  gl_FragColor = vec4(psi * uMsScale, 1.0);
 }
 `;
 
@@ -652,6 +788,30 @@ void bakePlanet(vec3 p, out vec4 col, out vec4 aux) {
 #endif
 
 #ifdef EARTH
+// Settlements on one scale: some cells of a grid on the sphere hold a town at a random spot, each a bright core
+// that thins out into suburbs. density: share of cells settled; spread: town radius in cells
+float settlements(vec3 p, float scale, float density, float spread, float seed) {
+  vec3 g = p * scale;
+  vec3 i = floor(g);
+  vec3 f = fract(g);
+  float light = 0.0;
+  for (int x = -1; x <= 1; x++) {
+    for (int y = -1; y <= 1; y++) {
+      for (int z = -1; z <= 1; z++) {
+        vec3 c = vec3(float(x), float(y), float(z));
+        vec3 h = hash33(i + c + seed);
+        if (h.x > density) continue;
+        vec3 pt = c + 0.15 + 0.7 * hash33(i + c + seed + 17.3);
+        float size = spread * (0.35 + 0.65 * h.y * h.y);
+        float d = length(pt - f) / size;
+        // a hot core and a wide, dim sprawl
+        light += (exp(-d * d * 5.0) + 0.18 * exp(-d * d * 1.2)) * (0.4 + 0.6 * h.z * h.z);
+      }
+    }
+  }
+  return light;
+}
+
 void bakePlanet(vec3 p, out vec4 col, out vec4 aux) {
   vec3 q = p * 1.15;
   vec3 warp = vec3(fbm(q + vec3(3.1, 0.0, 0.0), 4), fbm(q + vec3(0.0, 7.7, 0.0), 4), fbm(q + vec3(0.0, 0.0, 1.9), 4));
@@ -703,12 +863,25 @@ void bakePlanet(vec3 p, out vec4 col, out vec4 aux) {
   vec3 surface = mix(seaCol, landCol, land);
   surface = mix(surface, snow * 0.97, seaIce * (1.0 - land));
 
-  // Cities: settled lowlands of the temperate and warm belts, clustered and thickest near the coasts
-  float habitable = land * (1.0 - clamp(snowLine, 0.0, 1.0)) * smoothstep(0.25, 0.5, temp) * smoothstep(0.12, 0.4, moist) * exp(-elev * 6.0);
+  // Cities, as night photos from orbit show them: settled lowlands of the temperate and warm belts, thickest along
+  // the coasts, in river plains and in a few crowded regions; big metropolises with white-hot cores, a scatter of
+  // towns and villages around them, and highways strung between them as faint threads of light
+  float habitable = land * (1.0 - clamp(snowLine, 0.0, 1.0)) * smoothstep(0.25, 0.5, temp) * smoothstep(0.12, 0.4, moist) * exp(-elev * 5.0);
   float coastal = exp(-elev * 30.0);
-  float regions = smoothstep(0.12, 0.5, fbm(p * 7.0 + 5.0, 4) + 0.25 * coastal);
-  float towns = pow(max(snoise(p * 150.0), 0.0), 2.0) + 0.8 * pow(max(snoise(p * 55.0), 0.0), 3.0) + 0.5 * pow(max(snoise(p * 380.0), 0.0), 4.0);
-  float lights = clamp(habitable * regions * towns * 1.6, 0.0, 1.0);
+  float valleys = smoothstep(0.55, 0.95, 1.0 - abs(snoise(p * 9.0 + warp * 2.0))) * exp(-elev * 12.0);
+  float regions = smoothstep(-0.2, 0.35, fbm(p * 5.0 + 5.0, 4) + 0.3 * coastal + 0.25 * valleys);
+  float settled = habitable * regions;
+  float metros = settlements(p, 26.0, 0.3, 0.5, 3.0);
+  float towns = settlements(p, 90.0, 0.45, 0.38, 11.0);
+  float villages = settlements(p, 280.0, 0.5, 0.45, 29.0);
+  // Highways: thin ridges of a noise field, only between settled places
+  float roadNet = pow(max(1.0 - abs(snoise(p * 60.0 + warp * 3.0)), 0.0), 28.0) + 0.6 * pow(max(1.0 - abs(snoise(p * 140.0 + 7.0)), 0.0), 40.0);
+  float speckle = 0.65 + 0.7 * smoothstep(-0.3, 0.7, snoise(p * 420.0));
+  float urban = settled * (metros * 1.2 + towns * 0.6 + villages * 0.3 + roadNet * 0.12 * smoothstep(0.05, 0.4, metros + towns));
+  float lights = 1.0 - exp(-urban * speckle * (0.8 + 0.5 * coastal) * 2.2);
+  // By day the big cities show too: grey patches of roofs and asphalt
+  float builtUp = clamp(settled * (metros * 0.9 + towns * 0.35) - 0.12, 0.0, 1.0);
+  surface = mix(surface, vec3(0.46, 0.44, 0.41) * (0.85 + 0.3 * speckle), builtUp * 0.55 * land);
 
   // Clouds: warped turbulence, storm belts at mid latitudes, clear subtropics, a few cyclones
   vec3 cp = p;
@@ -1151,7 +1324,9 @@ void main() {
 
   // City lights on the night side
   float night = 1.0 - smoothstep(-0.12, 0.04, geo);
-  color += vec3(1.0, 0.66, 0.30) * aux.r * night * 1.6 * (1.0 - cloudHere * 0.75);
+  vec3 cityCol = mix(vec3(1.0, 0.58, 0.24), vec3(1.0, 0.86, 0.66), smoothstep(0.45, 1.0, aux.r));
+  // Clouds over a city glow dimly from below instead of hiding it completely
+  color += cityCol * aux.r * night * 2.6 * (1.0 - cloudHere * 0.65);
 #endif
 
 #ifdef RING_SHADOW
@@ -1218,7 +1393,34 @@ void main() {
 export const ATMOSPHERE_FRAGMENT = BODY_UNIFORMS + /* glsl */ `
 #include <logdepthbuf_pars_fragment>
 const float PI = 3.141592653589793;
+uniform float uSunAng;
 ` + ATMOSPHERE_GLSL + /* glsl */ `
+// Ring of fire when the planet covers the Sun: sunlight that passes through the air at the limb is bent round the
+// planet (refraction, strongest in the dense low layers) and reaches eyes that sit in the shadow. Seen only when
+// the limb lies close enough to the hidden Sun for the bending to bridge the gap: from close behind the planet the
+// limb stays dark, from farther out a thin ring shows, red low down where only red light gets through, gold above.
+// The bending is stretched like the game's air (thicker than Earth's) and the ring kept a little under the Sun's
+// own brightness, so it glows without dazzling.
+#define RING_BEND 0.14
+#define RING_GAIN 1.5
+vec3 limbRing(vec3 ro, vec3 rd, vec3 sunDir) {
+  float tc = -dot(ro, rd);
+  if (tc <= 0.0) return vec3(0.0);
+  float ht = length(ro + rd * tc) - uRadius;
+  if (ht <= 0.0 || ht >= uAtmoTop - uRadius) return vec3(0.0);
+  float sep = acos(clamp(dot(rd, sunDir), -1.0, 1.0)) - uSunAng;
+  float bend = RING_BEND * exp(-ht / uHR);
+  float reach = exp(-max(sep, 0.0) / max(bend, 1e-5));
+  if (reach < 1e-3) return vec3(0.0);
+  // Column of air along a grazing ray at height ht (Chapman's airmass for a grazing path)
+  float airR = uHR * exp(-ht / uHR) * sqrt(2.0 * PI * uRadius / uHR);
+  float airM = uHM * exp(-ht / uHM) * sqrt(2.0 * PI * uRadius / uHM);
+  vec3 tau = uBetaR * airR + MIE_EXT * airM;
+  // Thin upper air bends little and throws little light into the shadow: the dense, reddened layers carry the ring
+  float lens = exp(-ht / (1.5 * uHR));
+  return vec3(1.25 * RING_GAIN) * exp(-tau) * reach * lens; // 1.25: the Sun disc's own HDR brightness (planets.js)
+}
+
 void main() {
   vec3 rd = normalize(vRel - uCamLocal);
   // Slightly inside the true sphere, so the sky also fills the sliver between the polygon horizon and the exact one
@@ -1226,6 +1428,7 @@ void main() {
   vec3 inscatter;
   vec3 transmit;
   atmosphere(uCamLocal, rd, 1e9, uSunDir, uRadius, inscatter, transmit);
+  inscatter += limbRing(uCamLocal, rd, uSunDir);
   gl_FragColor = vec4(inscatter, 1.0 - dot(transmit, vec3(1.0 / 3.0)));
   #include <logdepthbuf_fragment>
 }

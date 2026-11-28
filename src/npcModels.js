@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { section, loft, finish, strut, merge, nacelle, glowTexture, makeHullTextures, makeEnvironment, rng } from './shipModel';
+import { section, loft, finish, strut, merge, nacelle, glowTexture, makeHullTextures, hardSurface, setSurface, rng } from './shipModel';
 
 // Everyone else in the system, built from the same faceted kit as the player's freighter so they share its
 // painted, worn look. One glance tells who is who: pirates are jagged and soot-black with rust and red,
@@ -70,6 +70,16 @@ const C = {
   white: new THREE.Color(0xc8ccd0), whiteDim: new THREE.Color(0x8d939a), navy: new THREE.Color(0x1d3a70), steel: new THREE.Color(0x4b5157),
   sand: new THREE.Color(0x9c9078), rustCiv: new THREE.Color(0x7a5a3c), red: new THREE.Color(0x8a2c20), blue: new THREE.Color(0x2a5a8c), ochre: new THREE.Color(0xa8761f), dark: new THREE.Color(0x26272a),
 };
+// Pirates fly sooty bare metal and rust, SOLPOL glossy fleet enamel over steel, civilians plain worn paint
+setSurface(C.soot, 'soot');
+setSurface(C.sootHi, 'soot');
+setSurface(C.rust, 'rust');
+setSurface(C.rustCiv, 'rust');
+setSurface(C.white, 'gloss');
+setSurface(C.whiteDim, 'gloss');
+setSurface(C.navy, 'gloss');
+setSurface(C.steel, 'metal');
+setSurface(C.dark, 'metal');
 
 const piratePaint = (c, n) => {
   if (n.y > 0.6 && Math.abs(c.x) > 1.4) return C.blood;
@@ -257,13 +267,12 @@ const ENGINE_COLOR = { pirate: new THREE.Color(2.4, 0.7, 0.22), police: new THRE
 class Kit {
   constructor(renderer) {
     const tex = makeHullTextures();
-    const env = renderer ? makeEnvironment(renderer) : null;
-    this.hullMat = new THREE.MeshStandardMaterial({
-      vertexColors: true, map: tex.map, bumpMap: tex.bumpMap, bumpScale: 1.1, roughnessMap: tex.roughnessMap,
-      roughness: 0.72, metalness: 0.4, envMap: env, envMapIntensity: 0.85, flatShading: true, side: THREE.DoubleSide,
-    });
+    // Reflections come from scene.environment (envProbe.js); what each paint is made of from SURFACE via setSurface
+    this.hullMat = hardSurface(new THREE.MeshStandardMaterial({
+      vertexColors: true, map: tex.map, normalMap: tex.normalMap, normalScale: new THREE.Vector2(0.9, 0.9),
+      roughnessMap: tex.roughnessMap, metalnessMap: tex.metalnessMap, roughness: 1, metalness: 0, side: THREE.DoubleSide,
+    }), true);
     this.hullTex = tex;
-    this.env = env;
     this.glow = glowTexture();
     this.cache = {};
     this.lightMats = {};

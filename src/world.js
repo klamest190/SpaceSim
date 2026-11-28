@@ -61,6 +61,23 @@ export const STATION_DEFS = [
     produces: { arms: 2.5, stims: 2.5 }, consumes: { food: 3, med: 2, tech: 1, lux: 1 },
     blurb: 'Ein ausgehöhlter Fels, gespickt mit Kanonen. Heimat des Aschebunds.',
   },
+  // Pirate outposts: everyone knows where they are, few fly there. outpost: guarded by gun turrets, warns off
+  // strangers by radio and opens fire on those who keep coming (pirateBases.js)
+  {
+    name: 'Krähennest', owner: 'pirate', short: 'Krähennest', planetIndex: 0, orbitRadius: 4150, angle: 0.75, style: 'outpost', size: 18, security: 0, faction: 'pirate', blackMarket: true, outpost: true,
+    produces: { stims: 1.5, ore: 1 }, consumes: { food: 2, med: 1, arms: 0.8 },
+    blurb: 'Ein Felsbrocken im Pallas-Feld mit Geschützen und einer Kneipe. Wer hier anlegt, fragt nicht nach Herkunft.',
+  },
+  {
+    name: 'Schakalsbau', owner: 'pirate', short: 'Schakalsbau', planetIndex: 0, orbitRadius: 7350, angle: 4.75, style: 'outpost', size: 18, security: 0, faction: 'pirate', blackMarket: true, outpost: true,
+    produces: { arms: 1.5, tech: 0.6 }, consumes: { food: 2.5, ice: 2, lux: 0.6 },
+    blurb: 'Versteck in Jupiters Trojanerschwarm. Hier werden gekaperte Frachter ausgeschlachtet.',
+  },
+  {
+    name: 'Eisgrab', owner: 'pirate', short: 'Eisgrab', planetIndex: 7, orbit: 2.3, style: 'outpost', size: 18, security: 0, faction: 'pirate', blackMarket: true, outpost: true,
+    produces: { ice: 2, stims: 1 }, consumes: { food: 3, med: 1.5, tech: 0.8 },
+    blurb: 'Ein vereister Bunker im Orbit des Uranus, so weit draußen, dass selbst SOLPOL den Weg nicht kennt.',
+  },
 ];
 
 // Asteroid fields: rocks scattered around a spot in the belt

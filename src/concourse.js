@@ -167,6 +167,9 @@ const THEMES = {
   'Titan-Raffinerie': { wall: '#6c6840', wall2: '#3a3822', ceil: '#1c1a10', floor: '#2a281a', floor2: '#444028', trim: '#b8a864', light: '#ffdc94', neon: '#c0ff40', accent: '#ff9030', wood: '#4a3c22', grime: true, hazard: true, planet: { a: '#dcb878', b: '#b08c50', c: '#f0e0b0', atmo: '#ffe8b0', rings: true, bands: true }, decor: 'barrel' },
   'Triton-Posten': { wall: '#3a4c56', wall2: '#1c262c', ceil: '#10161a', floor: '#182026', floor2: '#28343c', trim: '#7a9aa2', light: '#a8e8d8', neon: '#ff3aa0', accent: '#40ffd0', wood: '#3a2a2a', grime: true, planet: { a: '#4a7ad0', b: '#2a4a8a', c: '#a8ccff', atmo: '#80b0ff' }, decor: 'barrel' },
   'Hades-Nest': { wall: '#5a4036', wall2: '#2a1c18', ceil: '#140e0c', floor: '#221614', floor2: '#3a2620', trim: '#9a6444', light: '#ffb070', neon: '#ff3020', accent: '#ffb000', wood: '#3a2418', rock: true, grime: true, planet: null, decor: 'barrel' },
+  'Krähennest': { wall: '#4e463e', wall2: '#26201c', ceil: '#120e0c', floor: '#1e1a16', floor2: '#342c24', trim: '#8a7454', light: '#ffc488', neon: '#ff4428', accent: '#ffcc30', wood: '#3a2a1c', rock: true, grime: true, planet: null, decor: 'crate' },
+  'Schakalsbau': { wall: '#5a4a34', wall2: '#2c2216', ceil: '#140f08', floor: '#241c12', floor2: '#3e3020', trim: '#a8844a', light: '#ffd090', neon: '#ff6a20', accent: '#ffb000', wood: '#3e2c18', grime: true, hazard: true, planet: { a: '#d8b080', b: '#a87a50', c: '#f0dcb4', atmo: '#ffe0b0', bands: true }, decor: 'barrel' },
+  'Eisgrab': { wall: '#3c4a52', wall2: '#1a2228', ceil: '#0c1014', floor: '#141a20', floor2: '#24303a', trim: '#6a8a96', light: '#b8e8f0', neon: '#ff3a50', accent: '#60f0ff', wood: '#2e2a2a', grime: true, planet: { a: '#9ad8e0', b: '#6aa8b8', c: '#d8f4f8', atmo: '#b0f0ff' }, decor: 'barrel' },
 };
 export function themeFor(def) {
   return THEMES[def.name] || THEMES['Erde Orbital-Station'];
@@ -176,6 +179,7 @@ export const BAR_NAMES = {
   'Erde Orbital-Station': 'Orbit-Lounge', 'Venus Wolkenstadt': 'Wolkenperle', 'Mars Außenposten': 'Roter Staub',
   'Ceres-Mine': 'Der Bohrkopf', 'Europa-Station': 'Eiskeller', 'Titan-Raffinerie': 'Zum Rostring',
   'Triton-Posten': 'Letzter Halt', 'Hades-Nest': 'Die Asche',
+  'Krähennest': 'Zum Galgen', 'Schakalsbau': 'Knochenmühle', 'Eisgrab': 'Frostbeule',
 };
 
 // ----- people ----------------------------------------------------------------------------------------

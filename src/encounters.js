@@ -172,7 +172,9 @@ export class Encounters {
     if (npcs.count((n) => near(n) && n.faction === guardFaction) < wantGuards) {
       const spot = this.aroundStation(st, 500, 900);
       const type = pirateBase ? pick(['crow', 'jackal']) : st.security > 0.7 && Math.random() < 0.2 ? 'cutter' : 'patrol';
-      const npc = npcs.arrive(type, spot, { mode: 'patrol', anchor: st, patrolRadius: st.size + 450, lookAt: st.mesh.position });
+      // An outpost's guards fly in its wing: they hold fire while it talks (pirateBases.js)
+      const group = pirateBase && st.def.outpost ? this.game.pirateBases.wingFor(st) : undefined;
+      const npc = npcs.arrive(type, spot, { mode: 'patrol', anchor: st, patrolRadius: st.size + 450, lookAt: st.mesh.position, group });
       npc.home.station = st;
     }
 

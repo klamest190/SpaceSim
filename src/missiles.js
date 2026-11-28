@@ -23,9 +23,9 @@ const qa = new THREE.Quaternion();
 let parts = null;
 function missileParts() {
   if (parts) return parts;
-  const white = new THREE.MeshStandardMaterial({ color: 0xd8d6cf, roughness: 0.45, metalness: 0.35, flatShading: true });
-  const dark = new THREE.MeshStandardMaterial({ color: 0x2a2b2e, roughness: 0.5, metalness: 0.7, flatShading: true });
-  const red = new THREE.MeshStandardMaterial({ color: 0xa8241a, roughness: 0.5, metalness: 0.3, flatShading: true });
+  const white = new THREE.MeshStandardMaterial({ color: 0xd8d6cf, roughness: 0.4, metalness: 0.0 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x2a2b2e, roughness: 0.42, metalness: 0.85 });
+  const red = new THREE.MeshStandardMaterial({ color: 0xa8241a, roughness: 0.4, metalness: 0.0 });
   const body = new THREE.CylinderGeometry(0.085, 0.085, 1.25, 10);
   body.rotateX(Math.PI / 2);
   const nose = new THREE.ConeGeometry(0.085, 0.38, 10);

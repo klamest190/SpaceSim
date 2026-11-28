@@ -2,9 +2,9 @@ import * as THREE from 'three';
 import { glowColor } from './heat';
 
 // The player's freighter: a chunky, faceted working ship in the spirit of the 90s cockpit sims,
-// rendered with today's materials. Flat-shaded hull lofted from chamfered sections, painted livery
-// (bone-white upper hull, gunmetal belly, ochre trim), panel lines and grime from one procedural texture,
-// glass canopy, twin ion nacelles with plumes, wingtip guns and blinking nav lights.
+// rendered with today's materials. Hull lofted from chamfered sections (smooth plates, crisp chamfers), painted livery
+// (bone-white enamel upper hull, ceramic-tiled belly, ochre trim, bare metal parts), panel lines, chipped paint and
+// grime from one procedural texture set, glass canopy, twin ion nacelles with plumes, wingtip guns and blinking nav lights.
 // Built in world units: about 2.5 long, 2.8 across the gun pods. -Z is forward.
 
 // Muzzles of the two wingtip guns, in ship space; the lasers leave from here
@@ -142,6 +142,83 @@ export function makeHullTextures() {
     r.fillRect(x, y, s, s);
   }
 
+  // Paint chipped down to the bare metal: along the seams, round the rivets, on the leading edges
+  const chips = document.createElement('canvas');
+  chips.width = chips.height = size;
+  const ch = chips.getContext('2d');
+  ch.fillStyle = '#000';
+  ch.fillRect(0, 0, size, size);
+  const chip = (x, y, s) => {
+    ch.fillStyle = '#fff';
+    ch.beginPath();
+    const k = 5 + Math.floor(rand() * 4);
+    for (let i = 0; i < k; i++) {
+      const ang = (i / k) * Math.PI * 2;
+      const rr = s * (0.5 + rand() * 0.7);
+      if (i === 0) ch.moveTo(x + Math.cos(ang) * rr, y + Math.sin(ang) * rr);
+      else ch.lineTo(x + Math.cos(ang) * rr, y + Math.sin(ang) * rr);
+    }
+    ch.closePath();
+    ch.fill();
+    r.fillStyle = 'rgba(70,70,70,0.9)';
+    r.fillRect(x - s * 0.6, y - s * 0.6, s * 1.2, s * 1.2);
+  };
+  panels.forEach(([x, y, w, h]) => {
+    const n = Math.floor(rand() * 7);
+    for (let i = 0; i < n; i++) {
+      // Most chips sit right on a seam
+      const onX = rand() < 0.5;
+      const px = onX ? x + rand() * w : (rand() < 0.5 ? x + 3 : x + w - 3);
+      const py = onX ? (rand() < 0.5 ? y + 3 : y + h - 3) : y + rand() * h;
+      chip(px, py, 1.5 + rand() * 4.5);
+    }
+  });
+  for (let i = 0; i < 120; i++) chip(rand() * size, rand() * size, 0.8 + rand() * 2);
+
+  // Normal map from the bump heights, plus a slight tilt per plate: welded plates never lie quite flush, so each
+  // catches the light and mirrors the surroundings a little differently
+  const tilt = document.createElement('canvas');
+  tilt.width = tilt.height = size;
+  const tl = tilt.getContext('2d');
+  tl.fillStyle = 'rgb(128,128,0)';
+  tl.fillRect(0, 0, size, size);
+  panels.forEach(([x, y, w, h]) => {
+    tl.fillStyle = `rgb(${128 + Math.round((rand() - 0.5) * 14)},${128 + Math.round((rand() - 0.5) * 14)},0)`;
+    tl.fillRect(x + 3, y + 3, w - 6, h - 6);
+  });
+  const H = b.getImageData(0, 0, size, size).data;
+  const T = tl.getImageData(0, 0, size, size).data;
+  const C = ch.getImageData(0, 0, size, size).data;
+  const R = r.getImageData(0, 0, size, size).data;
+  const normal = document.createElement('canvas');
+  normal.width = normal.height = size;
+  const nc = normal.getContext('2d');
+  const nImg = nc.createImageData(size, size);
+  const orm = document.createElement('canvas');
+  orm.width = orm.height = size;
+  const oc = orm.getContext('2d');
+  const oImg = oc.createImageData(size, size);
+  const at = (x, y) => H[((((y + size) % size) * size + ((x + size) % size)) * 4)] / 255;
+  const strength = 3.2;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const i = (y * size + x) * 4;
+      let nx = -(at(x + 1, y) - at(x - 1, y)) * strength + (T[i] - 128) / 128;
+      let ny = (at(x, y + 1) - at(x, y - 1)) * strength - (T[i + 1] - 128) / 128;
+      const inv = 1 / Math.hypot(nx, ny, 1);
+      nImg.data[i] = Math.round((nx * inv * 0.5 + 0.5) * 255);
+      nImg.data[i + 1] = Math.round((ny * inv * 0.5 + 0.5) * 255);
+      nImg.data[i + 2] = Math.round((inv * 0.5 + 0.5) * 255);
+      nImg.data[i + 3] = 255;
+      // Occlusion (unused), roughness, bare metal where the paint is gone
+      oImg.data[i] = 255;
+      oImg.data[i + 1] = R[i];
+      oImg.data[i + 2] = C[i];
+      oImg.data[i + 3] = 255;
+    }
+  }
+  nc.putImageData(nImg, 0, 0);
+  oc.putImageData(oImg, 0, 0);
   const toTex = (canvas, srgb) => {
     const t = new THREE.CanvasTexture(canvas);
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
@@ -149,7 +226,112 @@ export function makeHullTextures() {
     t.anisotropy = 8;
     return t;
   };
-  return { map: toTex(albedo, true), bumpMap: toTex(bump, false), roughnessMap: toTex(rough, false) };
+  const ormTex = toTex(orm, false);
+  return {
+    map: toTex(albedo, true), bumpMap: toTex(bump, false), normalMap: toTex(normal, false),
+    roughnessMap: ormTex, metalnessMap: ormTex,
+  };
+}
+
+// --------------------------------------------------------------------------------------------
+// Hard-surface materials: what each painted colour is made of, and a shader patch that reads it per face
+// --------------------------------------------------------------------------------------------
+
+// Roughness and metalness of the stuff under each livery colour: glossy enamel, matte ceramic heat tiles,
+// bare or sooty metal. Paint wears through to the metal where the chip mask says so (see makeHullTextures).
+export const SURFACE = {
+  paint: [0.46, 0.0],
+  gloss: [0.34, 0.0],
+  tiles: [0.86, 0.0],
+  metal: [0.36, 0.92],
+  soot: [0.62, 0.55],
+  rust: [0.88, 0.15],
+};
+const surfaceOf = new Map();
+export function setSurface(color, kind) {
+  surfaceOf.set(color, SURFACE[kind] || kind);
+}
+setSurface(PAINT.bone, 'paint');
+setSurface(PAINT.boneDark, 'paint');
+setSurface(PAINT.ochre, 'paint');
+setSurface(PAINT.gunmetal, 'tiles');
+setSurface(PAINT.dark, 'metal');
+
+// Normals smoothed across gentle bends and kept sharp at the chamfers, so the hull reads as curved plates with
+// crisp edges instead of a polygon model. Like BufferGeometryUtils.toCreasedNormals, but with a finer weld grid
+// (the ship's small parts sit closer together than its 1 cm hash).
+export function creaseNormals(g, creaseAngle) {
+  const creaseDot = Math.cos(creaseAngle);
+  const p = g.attributes.position;
+  const faceN = [];
+  const map = new Map();
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  const key = (v) => `${Math.round(v.x * 1e4)},${Math.round(v.y * 1e4)},${Math.round(v.z * 1e4)}`;
+  for (let i = 0; i < p.count; i += 3) {
+    a.fromBufferAttribute(p, i); b.fromBufferAttribute(p, i + 1); c.fromBufferAttribute(p, i + 2);
+    const n = new THREE.Vector3().subVectors(c, b).cross(new THREE.Vector3().subVectors(a, b));
+    const area = n.length();
+    n.normalize();
+    faceN.push(n);
+    [a, b, c].forEach((v) => {
+      const k = key(v);
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push({ n, area });
+    });
+  }
+  const out = new Float32Array(p.count * 3);
+  const sum = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    const fn = faceN[Math.floor(i / 3)];
+    a.fromBufferAttribute(p, i);
+    sum.set(0, 0, 0);
+    map.get(key(a)).forEach(({ n, area }) => { if (n.dot(fn) > creaseDot) sum.addScaledVector(n, area + 1e-6); });
+    if (sum.lengthSq() < 1e-12) sum.copy(fn);
+    sum.normalize();
+    out[i * 3] = sum.x; out[i * 3 + 1] = sum.y; out[i * 3 + 2] = sum.z;
+  }
+  g.setAttribute('normal', new THREE.BufferAttribute(out, 3));
+  return g;
+}
+
+// Brightest a hull pixel may get: a sun glint on glass or polished metal sparkles, but never blooms into a blot
+const GLINT_MAX = '5.0';
+
+// Patches a MeshStandardMaterial: roughness and metalness per face from the `surface` attribute (perFace), the
+// ORM map's green channel as a roughness variation round 1, its blue channel as chipped paint down to bare metal,
+// and a cap on the brightest highlights
+export function hardSurface(material, perFace = false) {
+  material.onBeforeCompile = (shader) => {
+    if (perFace) {
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nattribute vec2 surface;\nvarying vec2 vSurface;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvSurface = surface;');
+      shader.fragmentShader = shader.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec2 vSurface;');
+    }
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <roughnessmap_fragment>', `
+        float roughnessFactor = roughness;
+        ${perFace ? 'roughnessFactor = vSurface.x;' : ''}
+        float chipMask = 0.0;
+        #ifdef USE_ROUGHNESSMAP
+          vec4 texelOrm = texture2D(roughnessMap, vRoughnessMapUv);
+          roughnessFactor = clamp(roughnessFactor * texelOrm.g * 1.75, 0.05, 1.0);
+          chipMask = texelOrm.b;
+        #endif`)
+      .replace('#include <metalnessmap_fragment>', `
+        float metalnessFactor = metalness;
+        ${perFace ? 'metalnessFactor = vSurface.y;' : ''}
+        // Bare metal shows where the paint chipped: grey, shiny, metallic
+        metalnessFactor = mix(metalnessFactor, 0.95, chipMask);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.58, 0.58, 0.6), chipMask);
+        roughnessFactor = mix(roughnessFactor, 0.3, chipMask);`)
+      .replace('#include <opaque_fragment>', `
+        outgoingLight = min(outgoingLight, vec3(${GLINT_MAX}));
+        if (any(isnan(outgoingLight))) outgoingLight = vec3(0.0); // one bad pixel would be bloomed over the screen
+        #include <opaque_fragment>`);
+  };
+  material.customProgramCacheKey = () => `hard:${perFace ? 1 : 0}`;
+  return material;
 }
 
 // Registration and warning markings, painted on the hull sides
@@ -177,38 +359,6 @@ function makeDecalTexture(text) {
   t.colorSpace = THREE.SRGBColorSpace;
   t.anisotropy = 8;
   return t;
-}
-
-// Dim studio-like surroundings for reflections, so the shadowed side of the hull still reads as metal
-export function makeEnvironment(renderer) {
-  const envScene = new THREE.Scene();
-  const sky = new THREE.Mesh(
-    new THREE.SphereGeometry(10, 32, 16),
-    new THREE.ShaderMaterial({
-      side: THREE.BackSide,
-      vertexShader: 'varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
-      fragmentShader: `varying vec3 vDir;
-        void main(){
-          float y = vDir.y;
-          vec3 top = vec3(0.10, 0.11, 0.13);
-          vec3 horizon = vec3(0.16, 0.15, 0.14);
-          vec3 bottom = vec3(0.02, 0.025, 0.035);
-          vec3 c = y > 0.0 ? mix(horizon, top, pow(y, 0.6)) : mix(horizon, bottom, pow(-y, 0.4));
-          // a few soft light panels so curved metal shows highlights from every side
-          c += vec3(0.9, 0.85, 0.75) * smoothstep(0.93, 0.99, dot(vDir, normalize(vec3(0.4, 0.8, 0.3))));
-          c += vec3(0.35, 0.45, 0.6) * smoothstep(0.9, 0.99, dot(vDir, normalize(vec3(-0.7, 0.2, -0.6))));
-          c += vec3(0.3, 0.28, 0.25) * smoothstep(0.85, 0.99, dot(vDir, normalize(vec3(0.2, -0.3, 0.9))));
-          gl_FragColor = vec4(c, 1.0);
-        }`,
-    })
-  );
-  envScene.add(sky);
-  const pmrem = new THREE.PMREMGenerator(renderer);
-  const env = pmrem.fromScene(envScene, 0.02).texture;
-  pmrem.dispose();
-  sky.geometry.dispose();
-  sky.material.dispose();
-  return env;
 }
 
 // --------------------------------------------------------------------------------------------
@@ -254,13 +404,14 @@ export function loft(rings, { capStart = true, capEnd = true } = {}) {
   return g;
 }
 
-// Flat normals, box-projected UVs (one texture tile per world unit) and livery colors per face
-export function finish(geometry, paint, uvScale = 0.75) {
+// Normals smooth across gentle bends and sharp at the chamfers, box-projected UVs (one texture tile per world
+// unit), livery colours per face and what each colour is made of (`surface`: roughness, metalness)
+export function finish(geometry, paint, uvScale = 0.75, crease = THREE.MathUtils.degToRad(34)) {
   let g = geometry.index ? geometry.toNonIndexed() : geometry;
-  g.computeVertexNormals();
   const p = g.attributes.position;
   const uv = new Float32Array(p.count * 2);
   const col = new Float32Array(p.count * 3);
+  const surf = new Float32Array(p.count * 2);
   const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
   const n = new THREE.Vector3(), center = new THREE.Vector3();
   for (let i = 0; i < p.count; i += 3) {
@@ -269,7 +420,10 @@ export function finish(geometry, paint, uvScale = 0.75) {
     center.copy(a).add(b).add(c).multiplyScalar(1 / 3);
     const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
     const color = paint(center, n);
+    const sf = surfaceOf.get(color) || SURFACE.paint;
     for (let v = 0; v < 3; v++) {
+      surf[(i + v) * 2] = sf[0];
+      surf[(i + v) * 2 + 1] = sf[1];
       const q = v === 0 ? a : v === 1 ? b : c;
       let u, w;
       if (ax >= ay && ax >= az) { u = q.z; w = q.y; } else if (ay >= az) { u = q.x; w = q.z; } else { u = q.x; w = q.y; }
@@ -280,7 +434,8 @@ export function finish(geometry, paint, uvScale = 0.75) {
   }
   g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  return g;
+  g.setAttribute('surface', new THREE.BufferAttribute(surf, 2));
+  return creaseNormals(g, crease);
 }
 
 // Turn every triangle of a closed convex-ish part so it faces away from the part's centre
@@ -399,31 +554,31 @@ export class ShipModel {
   constructor(renderer) {
     this.group = new THREE.Group();
     this.time = 0;
-    const env = renderer ? makeEnvironment(renderer) : null;
+    // Reflections come from scene.environment: the real surroundings, kept up to date by EnvProbe (envProbe.js)
     const tex = makeHullTextures();
 
-    const hullMat = new THREE.MeshStandardMaterial({
+    const hullMat = hardSurface(new THREE.MeshStandardMaterial({
       vertexColors: true,
       map: tex.map,
-      bumpMap: tex.bumpMap,
-      bumpScale: 1.2,
+      normalMap: tex.normalMap,
+      normalScale: new THREE.Vector2(0.9, 0.9),
       roughnessMap: tex.roughnessMap,
-      roughness: 0.75,
-      metalness: 0.35,
-      envMap: env,
-      envMapIntensity: 0.9,
-      flatShading: true,
-    });
-    const darkMat = new THREE.MeshStandardMaterial({
-      color: 0x2a2b2d, map: tex.map, bumpMap: tex.bumpMap, bumpScale: 0.8, roughness: 0.55, metalness: 0.8,
-      envMap: env, envMapIntensity: 1.0, flatShading: true,
-    });
+      metalnessMap: tex.metalnessMap,
+      roughness: 1,
+      metalness: 0,
+    }), true);
+    const darkMat = hardSurface(new THREE.MeshStandardMaterial({
+      color: 0x2e2f31, map: tex.map, normalMap: tex.normalMap, normalScale: new THREE.Vector2(0.6, 0.6),
+      roughnessMap: tex.roughnessMap, roughness: 0.4, metalness: 0.88,
+    }));
     const bellMat = darkMat.clone();
     bellMat.side = THREE.DoubleSide;
-    const glassMat = new THREE.MeshStandardMaterial({
-      color: 0x0a1418, roughness: 0.06, metalness: 0.9, envMap: env, envMapIntensity: 1.6,
-      emissive: 0x0d2a1a, emissiveIntensity: 0.6, flatShading: true,
-    });
+    hardSurface(bellMat);
+    // Real glass: a dark cockpit behind a pane that mirrors little head-on and almost everything at a grazing angle
+    const glassMat = hardSurface(new THREE.MeshPhysicalMaterial({
+      color: 0x04080a, roughness: 0.1, metalness: 0, ior: 1.52, envMapIntensity: 1.4,
+      emissive: 0x0d2a1a, emissiveIntensity: 0.15,
+    }));
 
     // Livery: bone-white upper hull, gunmetal belly, ochre band on the nose cheeks
     const livery = (c, n) => {
@@ -474,8 +629,7 @@ export class ShipModel {
     ];
     const canopyZ = [-0.98, -0.78, -0.5, -0.24];
     const cRings = canopyRings.map((ring, i) => ring.map(([x, y]) => new THREE.Vector3(x, y, canopyZ[i])));
-    const canopyGeo = loft(cRings);
-    canopyGeo.computeVertexNormals();
+    const canopyGeo = creaseNormals(loft(cRings), THREE.MathUtils.degToRad(40));
     this.group.add(new THREE.Mesh(canopyGeo, glassMat));
     const frameParts = [];
     // Bows across the glass at every section, sills and a spine running fore and aft
@@ -552,9 +706,9 @@ export class ShipModel {
     this.group.add(new THREE.Mesh(finish(merge(rcs), () => PAINT.dark, 3), darkMat));
 
     // ---- Radiators: two graphite panels standing in a V over the stern; they glow with the ship's waste heat
-    this.radiatorMat = new THREE.MeshStandardMaterial({
-      color: 0x17181a, roughness: 0.6, metalness: 0.4, envMap: env, envMapIntensity: 0.6, emissive: 0x000000, side: THREE.DoubleSide,
-    });
+    this.radiatorMat = hardSurface(new THREE.MeshStandardMaterial({
+      color: 0x17181a, roughness: 0.6, metalness: 0.4, envMapIntensity: 0.6, emissive: 0x000000, side: THREE.DoubleSide,
+    }));
     [-1, 1].forEach((side) => {
       const panel = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.016, 0.78), this.radiatorMat);
       panel.position.set(side * 0.47, 0.42, 0.36);
@@ -570,7 +724,7 @@ export class ShipModel {
     // ---- Markings on both hull sides
     const decalMat = new THREE.MeshStandardMaterial({
       map: makeDecalTexture('SOL 4471'), transparent: true, roughness: 0.7, metalness: 0.2,
-      polygonOffset: true, polygonOffsetFactor: -4, envMap: env, envMapIntensity: 0.5,
+      polygonOffset: true, polygonOffsetFactor: -4, envMapIntensity: 0.5,
     });
     [-1, 1].forEach((side) => {
       const plane = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.15), decalMat);
@@ -629,15 +783,17 @@ export class ShipModel {
       sprite.position.copy(pos);
       sprite.scale.setScalar(size);
       this.group.add(sprite);
-      const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.02, 6, 4), new THREE.MeshBasicMaterial({ color }));
+      // The bulb itself just above white: bright enough to glint, too small to bloom into a ball
+      const peak = Math.max(color.r, color.g, color.b);
+      const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.016, 6, 4), new THREE.MeshBasicMaterial({ color: color.clone().multiplyScalar(1.15 / peak) }));
       bulb.position.copy(pos);
       this.group.add(bulb);
       return sprite;
     };
-    navLight(new THREE.Vector3(-1.2, -0.1, 0.36), new THREE.Color(3, 0.15, 0.1), 0.14);
-    navLight(new THREE.Vector3(1.2, -0.1, 0.36), new THREE.Color(0.15, 3, 0.4), 0.14);
-    this.strobe = navLight(new THREE.Vector3(0, 0.72, 0.95), new THREE.Color(4, 4, 4), 0.3);
-    this.beacon = navLight(new THREE.Vector3(0, -0.4, 0.1), new THREE.Color(4, 0.6, 0.1), 0.16);
+    navLight(new THREE.Vector3(-1.2, -0.1, 0.36), new THREE.Color(1.8, 0.1, 0.06), 0.13);
+    navLight(new THREE.Vector3(1.2, -0.1, 0.36), new THREE.Color(0.1, 1.8, 0.25), 0.13);
+    this.strobe = navLight(new THREE.Vector3(0, 0.72, 0.95), new THREE.Color(1.8, 1.8, 1.8), 0.2);
+    this.beacon = navLight(new THREE.Vector3(0, -0.4, 0.1), new THREE.Color(2, 0.32, 0.06), 0.13);
 
     this.group.traverse((o) => {
       if (o.isMesh && !o.material.transparent) { o.castShadow = false; o.receiveShadow = false; }
@@ -681,7 +837,7 @@ export class ShipModel {
     const t = this.time % 1.6;
     const flash = (t < 0.06 || (t > 0.18 && t < 0.24)) ? 1 : 0;
     this.strobe.material.opacity = flash;
-    this.strobe.scale.setScalar(flash ? 0.36 : 0.01);
+    this.strobe.scale.setScalar(flash ? 0.24 : 0.01);
     const pulse = 0.5 + 0.5 * Math.sin(this.time * 3.2);
     this.beacon.material.opacity = Math.pow(pulse, 3);
   }

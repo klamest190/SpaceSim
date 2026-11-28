@@ -1,12 +1,17 @@
 import * as THREE from 'three';
 import {
   BAKE_VERTEX, BAKE_FRAGMENT, BODY_VERTEX, SURFACE_FRAGMENT, CLOUD_FRAGMENT,
-  ATMOSPHERE_FRAGMENT, RING_FRAGMENT, SUN_FRAGMENT
+  ATMOSPHERE_FRAGMENT, RING_FRAGMENT, SUN_FRAGMENT, MULTI_SCAT_FRAGMENT
 } from './planetShaders';
+import { loadSettings } from './save';
 
 // Testing aid: ?bake=0.25 bakes the surface maps at a quarter of the resolution (software renderers)
 const BAKE_SCALE = THREE.MathUtils.clamp(Number(new URLSearchParams(window.location.search).get('bake')) || 1, 0.03125, 1);
 const BAKE_STRIPS = 8; // maps are baked strip by strip, so a slow GPU never stalls on one huge draw
+// Graphics setting "Planetendetails": 'high' bakes the surface maps at twice the width (Earth and Mars at 8192),
+// sharper from close up at the cost of video memory and a longer start; read once, applies after a restart
+const PLANET_DETAIL = loadSettings().planetDetail === 'high' ? 2 : 1;
+const MULTI_SCAT_SIZE = 32;
 const SUN_RADIUS = 180; // drawn radius of the Sun, for the size of its disc in eclipses
 // Brightness of the Sun's disc in the HDR image: just above white in the middle, so it dazzles a little without the
 // bloom swallowing the view, while the darker limb stays readable (the glare around it is drawn by glare.js); stepped
@@ -136,12 +141,52 @@ function bakeMap(renderer, defines, pass, width, type, seed) {
   const previousAutoClear = renderer.autoClear;
   renderer.autoClear = false;
   renderer.setRenderTarget(target);
-  for (let i = 0; i < BAKE_STRIPS; i++) {
-    material.uniforms.uTile.value.set(0, i / BAKE_STRIPS, 1, 1 / BAKE_STRIPS);
+  const strips = Math.max(BAKE_STRIPS, Math.round((BAKE_STRIPS * width) / 2048));
+  for (let i = 0; i < strips; i++) {
+    material.uniforms.uTile.value.set(0, i / strips, 1, 1 / strips);
     renderer.render(scene, camera);
   }
   renderer.setRenderTarget(previousTarget);
   renderer.autoClear = previousAutoClear;
+  quad.geometry.dispose();
+  material.dispose();
+  return target.texture;
+}
+
+// The multiple-scattering table of one atmosphere (see MULTI_SCAT_FRAGMENT): 32 x 32 texels, baked once
+function bakeMultiScatter(renderer, u, atmo, defines) {
+  const target = new THREE.WebGLRenderTarget(MULTI_SCAT_SIZE, MULTI_SCAT_SIZE, {
+    type: THREE.HalfFloatType,
+    depthBuffer: false,
+    generateMipmaps: false,
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    wrapS: THREE.ClampToEdgeWrapping,
+    wrapT: THREE.ClampToEdgeWrapping
+  });
+  const ground = atmo.ground ?? 0.3;
+  const material = new THREE.ShaderMaterial({
+    defines,
+    vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy * 2.0, 0.0, 1.0); }',
+    fragmentShader: MULTI_SCAT_FRAGMENT,
+    uniforms: {
+      uRadius: u.uRadius, uAtmoTop: u.uAtmoTop, uHR: u.uHR, uHM: u.uHM, uBetaR: u.uBetaR, uBetaM: u.uBetaM,
+      uMieCol: u.uMieCol, uMieExt: u.uMieExt,
+      uGroundAlbedo: { value: new THREE.Vector3(ground, ground, ground) },
+      uMsScale: { value: atmo.ms ?? 1 }
+    },
+    depthTest: false,
+    depthWrite: false
+  });
+  const quad = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material);
+  quad.frustumCulled = false;
+  const scene = new THREE.Scene();
+  scene.add(quad);
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const previousTarget = renderer.getRenderTarget();
+  renderer.setRenderTarget(target);
+  renderer.render(scene, camera);
+  renderer.setRenderTarget(previousTarget);
   quad.geometry.dispose();
   material.dispose();
   return target.texture;
@@ -276,7 +321,10 @@ export class PlanetBody {
     const atmo = data.atmosphere;
     this.atmosphereTop = atmo ? R * (1 + atmo.thickness) : R;
 
-    const texWidth = Math.max(256, Math.round((data.texWidth || 2048) * BAKE_SCALE));
+    const maxTex = renderer ? renderer.capabilities.maxTextureSize : 4096;
+    const detailCap = data.name === 'Earth' || data.name === 'Mars' ? 8192 : 4096;
+    const baseWidth = data.texWidth || 2048;
+    const texWidth = Math.max(256, Math.round(Math.min(baseWidth * PLANET_DETAIL, Math.max(baseWidth, detailCap), maxTex) * BAKE_SCALE));
     const texel = (2 * Math.PI * R) / texWidth;
 
     const u = (this.uniforms = {
@@ -304,6 +352,8 @@ export class PlanetBody {
       uSunE: { value: 8 },
       uMieCol: { value: new THREE.Vector3(1, 1, 1) },
       uMieExt: { value: new THREE.Vector3(1.1, 1.1, 1.1) },
+      uOzone: { value: new THREE.Vector3() },
+      uMultiScat: { value: null },
       // Eclipses: bodies that can stand between this one and the Sun (set each frame by the solar system)
       uCasters: { value: [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()] },
       uSunAng: { value: 0.05 },
@@ -324,6 +374,8 @@ export class PlanetBody {
       u.uSunE.value = atmo.sunE;
       if (atmo.mieCol) u.uMieCol.value.fromArray(atmo.mieCol);
       if (atmo.mieExt) u.uMieExt.value.fromArray(atmo.mieExt);
+      // Ozone: vertical optical depth spread over its layer, which is 1.9 Rayleigh scale heights wide (half width)
+      if (atmo.ozone) u.uOzone.value.fromArray(atmo.ozone).divideScalar(1.9 * u.uHR.value);
     }
 
     if (this.isSun) {
@@ -352,7 +404,8 @@ export class PlanetBody {
     const heightMap = 'HEIGHT_IN_ALPHA' in defines;
     u.uColorMap.value = bakeMap(renderer, defines, 0, texWidth, heightMap ? THREE.HalfFloatType : THREE.UnsignedByteType, seed);
     if (data.name === 'Earth' || data.auxMap) {
-      u.uAuxMap.value = bakeMap(renderer, defines, 1, Math.max(256, Math.round((data.auxMap || 2048) * BAKE_SCALE)), THREE.HalfFloatType, seed);
+      const auxWidth = Math.min((data.auxMap || 2048) * PLANET_DETAIL, 4096, renderer.capabilities.maxTextureSize);
+      u.uAuxMap.value = bakeMap(renderer, defines, 1, Math.max(256, Math.round(auxWidth * BAKE_SCALE)), THREE.HalfFloatType, seed);
     }
 
     if (atmo) defines.HAS_ATMO = '';
@@ -363,6 +416,12 @@ export class PlanetBody {
       atmoDefines.ATMO_STEPS = String(atmo.steps);
       atmoDefines.ATMO_FIXED_STEP = '';
     }
+    if (atmo) {
+      u.uMultiScat.value = bakeMultiScatter(renderer, u, atmo, atmo.mieCol ? { MIE_TINT: '' } : {});
+      atmoDefines.MULTI_SCAT = '';
+      if (atmo.ozone) atmoDefines.OZONE = '';
+    }
+    this.atmoDefines = atmoDefines;
     Object.assign(defines, atmoDefines);
     if (data.rings && data.name === 'Saturn') defines.RING_SHADOW = '';
 
@@ -383,6 +442,7 @@ export class PlanetBody {
       this.clouds = new THREE.Mesh(
         new THREE.SphereGeometry(1, 256, 128),
         new THREE.ShaderMaterial({
+          defines: Object.fromEntries(Object.entries(atmoDefines).filter(([k]) => !k.startsWith('ATMO_'))),
           uniforms: u,
           vertexShader: BODY_VERTEX,
           fragmentShader: CLOUD_FRAGMENT,

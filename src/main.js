@@ -27,6 +27,8 @@ import { MissileCam } from './missileCam';
 import { GOODS, emptyCargo, STARTING_DEBT } from './world';
 import { DIFFICULTIES, difficultyOf } from './difficulty';
 import { EyeAdaptation } from './exposure';
+import { EnvProbe } from './envProbe';
+import { PirateBases } from './pirateBases';
 import { SunGlare } from './glare';
 import { SolarStorm } from './solarStorm';
 import { Thermal } from './heat';
@@ -88,6 +90,9 @@ class Game {
 
     // World and its systems
     this.solarSystem = new SolarSystem(this.scene, this.renderer);
+    // Hulls mirror the real surroundings (sky, the planet below) and are lit by its day side through them
+    this.envProbe = new EnvProbe(this.renderer, this.solarSystem, this.solarSystem.sunLight.intensity);
+    this.scene.environment = this.envProbe.texture;
     this.ship = new Spaceship(this.scene, this.renderer);
     this.ship.game = this;
     this.story = new Story(this);
@@ -113,6 +118,7 @@ class Game {
     this.crew = new Crew(this);
     this.rival = new Rival(this);
     this.radio = new Radio(this);
+    this.pirateBases = new PirateBases(this);
     this.flightInfo = document.getElementById('hud-flightinfo');
     sfx.listener = this.camera;
 
@@ -229,6 +235,7 @@ class Game {
     this.radio.reset();
     ship.applyUpgrades();
     this.encounters.reset();
+    this.pirateBases.reset();
     this.npcs.clearAll();
     this.discovered.clear();
     this.solarSystem.stations.forEach((s) => { if (s.def.hidden) { s.hidden = true; s.mesh.visible = false; } });
@@ -438,7 +445,7 @@ class Game {
     const { law } = this;
     const { story, missions } = this;
     const welcomeAtNest = story.path === 'asche' || !!story.ending || missions.done.includes('nest');
-    if (st.def.faction === 'pirate' && law.piratesHostile() && !welcomeAtNest) return 'Der Aschebund lässt dich nicht an Bord. Erst muss man dir dort vertrauen.';
+    if (st.def.faction === 'pirate' && law.piratesHostile() && !welcomeAtNest && !this.pirateBases.tollPaid(st)) return 'Der Aschebund lässt dich nicht an Bord. Erst muss man dir dort vertrauen.';
     // Those who run a station can shut it to a pilot they hate (never in the middle of the story)
     const owner = st.def.owner;
     if (owner && owner !== 'police' && owner !== 'pirate' && (law.rep[owner] || 0) <= -75 && !missions.active.some((m) => m.type === 'story' || m.type === 'side')) {
@@ -924,6 +931,7 @@ class Game {
       if (this.ship.atmosphereContact > 0) this.ship.atmosphereContact -= delta;
       if (!this.surface.active) {
         this.npcs.update(delta);
+        this.pirateBases.update(delta);
         this.combat.update(delta);
         if (!this.ship.isDocked) this.checkCollisions();
         this.encounters.update(delta);
@@ -980,6 +988,7 @@ class Game {
       this.solarSystem.updateView(this.camera);
       this.ringField.updateView(this.camera, this.renderer);
     }
+    if (!this.surface.active && this.ship) this.envProbe.update(frameTime, this.simRunning ? this.ship.position : this.camera.position);
     this.eyes.update(delta);
     this.glare.update(this);
     // Inside a station the painted interior covers the screen: no need to render space behind it
@@ -1158,6 +1167,7 @@ class Game {
 
   onStationHit(st, owner) {
     if (owner !== this.ship) return;
+    this.pirateBases.onBaseHit(st);
     st.hits = (st.hits || 0) + 1;
     if (st.hits === 3) this.comm.say('Hier Stationssicherheit: Feuer sofort einstellen!', { speaker: `Sicherheit ${displayName(st.name)}`, faction: st.def.faction === 'pirate' ? 'pirate' : 'police', urgent: true, duration: 4000 });
     if (st.hits >= 8) {
@@ -1173,6 +1183,7 @@ class Game {
 
   onNpcKilled(npc, killer) {
     const byPlayer = killer === this.ship;
+    this.pirateBases.onKilled(npc);
     if (byPlayer) {
       this.law.reportKill(npc);
       this.hud.toast(`Abschuss: ${npc.name}`, npc.faction === 'pirate' ? 'gain' : 'bad');

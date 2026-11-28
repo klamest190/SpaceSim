@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { finish, merge, strut, nacelle, rng } from './shipModel';
+import { finish, merge, strut, nacelle, rng, hardSurface } from './shipModel';
 import { modelKit } from './npcModels';
 
 // Space stations you can feel the size of: 20 times the length of your ship. Four shapes, one per kind of place:
@@ -33,12 +33,23 @@ function windowTexture(cols, rows, seed, lit = 0.42, tint = [255, 214, 150]) {
   return t;
 }
 
-function hullMaterial(k, color, windows = null, roughness = 0.62) {
-  return new THREE.MeshStandardMaterial({
-    color, map: k.hullTex.map, bumpMap: k.hullTex.bumpMap, bumpScale: 1, roughnessMap: k.hullTex.roughnessMap,
-    roughness, metalness: 0.55, envMap: k.env, envMapIntensity: 0.8, flatShading: true,
+// The ships' plating, tiled at a station's scale (a texture tile per few metres, not one across a whole drum)
+function stationTextures(k) {
+  if (!k.stationTex) {
+    const tile = (t) => { const c = t.clone(); c.repeat.set(6, 3); return c; };
+    k.stationTex = { map: tile(k.hullTex.map), normalMap: tile(k.hullTex.normalMap), orm: tile(k.hullTex.roughnessMap) };
+  }
+  return k.stationTex;
+}
+
+// Weathered metal plating; reflections from scene.environment (envProbe.js)
+function hullMaterial(k, color, windows = null, roughness = 0.5) {
+  const t = stationTextures(k);
+  return hardSurface(new THREE.MeshStandardMaterial({
+    color, map: t.map, normalMap: t.normalMap, normalScale: new THREE.Vector2(0.8, 0.8), roughnessMap: t.orm, metalnessMap: t.orm,
+    roughness, metalness: 0.6, envMapIntensity: 1.0,
     emissive: windows ? 0xffffff : 0x000000, emissiveMap: windows, emissiveIntensity: windows ? 1.4 : 0,
-  });
+  }));
 }
 
 const paintFlat = (color) => {
@@ -54,7 +65,7 @@ function addStruts(list, material, parent) {
 }
 
 function solarWing(parent, k, x, length, width) {
-  const mat = new THREE.MeshStandardMaterial({ color: 0x14306a, roughness: 0.25, metalness: 0.8, envMap: k.env, envMapIntensity: 1.2, emissive: 0x050c22 });
+  const mat = hardSurface(new THREE.MeshStandardMaterial({ color: 0x14306a, roughness: 0.22, metalness: 0.75, envMapIntensity: 1.2, emissive: 0x050c22 }));
   const frame = new THREE.MeshStandardMaterial({ color: 0x5a5e62, roughness: 0.5, metalness: 0.7 });
   const n = 4;
   for (let i = 0; i < n; i++) {
@@ -116,7 +127,9 @@ function ring(k, seed) {
   solarWing(group, k, 5.5, 18, 5);
   solarWing(group, k, -5.5, 18, 5);
   const list = beacons(k, group, [[0, 20.5, 0], [0, -11, 0], [24, 0, 0], [-24, 0, 0]], 0xff3020, 1.8);
-  return { group, spinning, spinRate: 0.06, beacons: list };
+  // Floodlights on the hub caps and a wing tip, thrown onto the wheel and the hub
+  const floods = [[[0, 10.6, 0], [16, 0, 7]], [[0, -10.6, 0], [-16, 0, -7]], [[23.5, 0.4, 0], [4, 3, 0]]];
+  return { group, spinning, spinRate: 0.06, beacons: list, floods };
 }
 
 function spindle(k, seed) {
@@ -153,7 +166,8 @@ function spindle(k, seed) {
     group.add(pod);
   });
   const list = beacons(k, group, [[0, 22.5, 0], [0, -22.5, 0], [16, -6, 7], [-16, -6, -7]], 0x30ff70, 1.8);
-  return { group, spinning, spinRate: -0.08, beacons: list };
+  const floods = [[[15.5, -6.5, 6.3], [6, -2, 1]], [[-15.5, -6.5, -6.3], [-8, 8, 0]], [[0, 22.2, 0], [4, 16, 2]]];
+  return { group, spinning, spinRate: -0.08, beacons: list, floods };
 }
 
 // A knobbly rock (shared by the 'mine' and 'nest' stations)
@@ -211,7 +225,9 @@ function mine(k, seed) {
   arm.position.y = -7;
   spinning.add(arm);
   const list = beacons(k, group, [[0, 29, 0], [22, 7, 0], [-22, 7, 0], [0, 7, 22], [0, 7, -22]], 0xffa020, 1.8);
-  return { group, spinning, spinRate: 0.14, beacons: list };
+  // Work lights on the blocks and the tower head, raking across the rock and the scaffold
+  const floods = [[[0, 27.6, 2.6], [10, 8, 4]], [[21, 11, 0], [4, 2, 2]], [[-16, 11, 15], [-4, 14, 2]]];
+  return { group, spinning, spinRate: 0.14, beacons: list, floods };
 }
 
 function nest(k, seed) {
@@ -242,10 +258,65 @@ function nest(k, seed) {
   collar.rotation.x = Math.PI / 2 + 0.25;
   spinning.add(collar);
   const list = beacons(k, group, [[0, 30, 0], [33, 0, 0], [-33, 0, 0], [0, -28, 0], [0, 0, 34], [0, 0, -34]], 0xff2010, 2.4);
-  return { group, spinning, spinRate: -0.05, beacons: list };
+  // Dim red work lights in the hangar mouths, washing the rock round them
+  const floods = [[[0, 4, 29], [0, 0, 0], 0xff5030], [[27, 7, -9], [0, 0, 0], 0xff5030], [[-25, 0, -14], [0, 0, 0], 0xff5030]];
+  return { group, spinning, spinRate: -0.05, beacons: list, floods };
 }
 
-const STYLES = { ring, spindle, mine, nest };
+// A pirate outpost: a smaller rock with a bolted-on habitat block, a hangar slit lit red, a landing pad, a
+// turning radar dish and gun mounts (the turrets themselves are NPCs, see pirateBases.js)
+function outpost(k, seed) {
+  const group = new THREE.Group();
+  const spinning = new THREE.Group();
+  group.add(spinning);
+  group.add(rock(11, seed, 0x3a332d));
+  const rust = hullMaterial(k, 0x6a3a22);
+  const dark = hullMaterial(k, 0x34302c);
+  const hab = new THREE.Mesh(new THREE.CylinderGeometry(4.2, 4.2, 12, 10), hullMaterial(k, 0x6e665a, windowTexture(32, 6, seed + 4, 0.5, [255, 150, 80])));
+  hab.rotation.z = Math.PI / 2;
+  hab.position.set(0, 9.5, 2);
+  group.add(hab);
+  const capL = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 4.2, 2, 10), rust);
+  capL.rotation.z = Math.PI / 2;
+  capL.position.set(-7, 9.5, 2);
+  group.add(capL);
+  const capR = capL.clone();
+  capR.rotation.z = -Math.PI / 2;
+  capR.position.x = 7;
+  group.add(capR);
+  // Hangar mouth on the side facing out, a landing pad below it
+  const mouth = new THREE.Mesh(new THREE.BoxGeometry(9, 3.4, 2.4), hullMaterial(k, 0x2a1c18, windowTexture(10, 2, seed + 6, 0.9, [255, 70, 40])));
+  mouth.position.set(0, 1, 11.2);
+  group.add(mouth);
+  const pad = new THREE.Mesh(new THREE.CylinderGeometry(5, 5, 0.6, 12), dark);
+  pad.position.set(0, -2.5, 15);
+  group.add(pad);
+  // Gun mounts round the rock, where the turrets sit
+  const mounts = [];
+  PIRATE_MOUNTS.forEach(([x, y, z]) => {
+    const d = V(x, y, z).normalize();
+    mounts.push(strut(d.clone().multiplyScalar(8), d.clone().multiplyScalar(13.5), 1.4, 1.4));
+  });
+  addStruts(mounts, dark, group);
+  // Radar mast with a turning dish
+  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.5, 9, 6), dark);
+  mast.position.set(3, 18, 2);
+  group.add(mast);
+  spinning.position.set(3, 22.5, 2);
+  const dish = new THREE.Mesh(new THREE.SphereGeometry(2.6, 12, 6, 0, Math.PI * 2, 0, Math.PI / 3), rust);
+  dish.material = dish.material.clone();
+  dish.material.side = THREE.DoubleSide;
+  dish.rotation.x = Math.PI / 2.4;
+  spinning.add(dish);
+  const list = beacons(k, group, [[3, 25, 2], [0, -2.2, 20], [-8.5, 9.5, 2], [8.5, 9.5, 2]], 0xff2010, 1.6);
+  const floods = [[[0, 5.5, 13.5], [0, -2.5, 15], 0xff7a40], [[-7.5, 13, 4], [-3, 3, 4]], [[7.5, 13, 4], [4, 4, 6]]];
+  return { group, spinning, spinRate: 0.9, beacons: list, floods };
+}
+
+// Where an outpost's gun turrets sit (directions from its centre; see pirateBases.js)
+export const PIRATE_MOUNTS = [[1, 0.35, 0.6], [-1, 0.3, 0.5], [0.4, 0.5, -1], [-0.3, -0.6, -0.8]];
+
+const STYLES = { ring, spindle, mine, nest, outpost };
 
 // A new station for `def`; animate() spins it and blinks its beacons
 export class StationVisual {
@@ -256,6 +327,14 @@ export class StationVisual {
     this.spinning = built.spinning;
     this.spinRate = built.spinRate;
     this.beacons = built.beacons;
+    this.floods = (built.floods || []).map(([from, to, color]) => ({ from: V(...from), to: V(...to), color: color ?? FLOOD_COLOR }));
+    // The lamp heads glow where they sit, lit or not by the pooled spotlights (see StationLights)
+    this.floods.forEach((fl) => {
+      const lamp = new THREE.Sprite(k.lightMat(fl.color, 1.5));
+      lamp.position.copy(fl.from);
+      lamp.scale.setScalar(1.3);
+      this.group.add(lamp);
+    });
     this.time = seed;
     // Tilted a little so stations don't all sit flat on the ecliptic
     this.group.rotation.set(0.14 + (seed % 3) * 0.08, seed * 0.7, 0.1 - (seed % 2) * 0.2);
@@ -268,5 +347,53 @@ export class StationVisual {
       const t = (this.time + b.phase) % 1.8;
       b.sprite.visible = t < 0.25;
     });
+  }
+}
+
+// Floodlights: three real spotlights that move to whichever station the ship is near, so the hull there gets pools
+// of warm light on its shadowed side while the light count (and the shaders) stay the same everywhere
+const FLOOD_COLOR = 0xffe2b8;
+const FLOOD_INTENSITY = 320;   // candela-like: about a third of the sunlight on the hull 15 units away
+const FLOOD_RANGE = 12;        // station sizes within which the lights are on
+
+export class StationLights {
+  constructor(scene) {
+    this.lights = [0, 1, 2].map(() => {
+      const l = new THREE.SpotLight(FLOOD_COLOR, 0, 90, 0.6, 0.75, 2);
+      l.castShadow = false;
+      scene.add(l);
+      scene.add(l.target);
+      return l;
+    });
+    this.scene = scene;
+    this.current = null;
+  }
+
+  update(stations, shipPos) {
+    let best = null;
+    let bestD = Infinity;
+    stations.forEach((st) => {
+      if (st.hidden || !st.visual.floods.length) return;
+      const d = st.mesh.position.distanceTo(shipPos);
+      if (d < st.size * FLOOD_RANGE && d < bestD) { best = st; bestD = d; }
+    });
+    if (best !== this.current) {
+      this.current = best;
+      this.lights.forEach((l, i) => {
+        const fl = best && best.visual.floods[i];
+        if (!fl) {
+          l.intensity = 0;
+          this.scene.add(l);
+          this.scene.add(l.target);
+          return;
+        }
+        best.mesh.add(l);
+        best.mesh.add(l.target);
+        l.position.copy(fl.from);
+        l.target.position.copy(fl.to);
+        l.color.set(fl.color);
+        l.intensity = fl.color === FLOOD_COLOR ? FLOOD_INTENSITY : FLOOD_INTENSITY * 0.45;
+      });
+    }
   }
 }

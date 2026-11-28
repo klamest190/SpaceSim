@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { PlanetBody } from './planets';
-import { StationVisual } from './stationModels';
+import { StationVisual, StationLights } from './stationModels';
 import { STATION_DEFS, FIELD_DEFS } from './world';
 import { rng } from './shipModel';
 import { buildRockShapes, makeRockMaterials, makeRock, dressField } from './asteroids';
@@ -18,7 +18,9 @@ const FLOOR_AIRLESS = 0.012;         // above airless ground it may come this cl
 
 // Planetary configurations
 // radius: drawn radius in units; tilt: axial tilt in degrees; spin: rad/s; gravity: pull at the surface (units/s²)
-// atmosphere: shell thickness and scale heights as fractions, vertical optical depths tauR (rgb) and tauM
+// atmosphere: shell thickness and scale heights as fractions, vertical optical depths tauR (rgb) and tauM,
+// ground: albedo under the air (for light scattered back up), ms: share of the multiple scattering drawn (default 1),
+// ozone: vertical optical depth of an ozone layer (rgb)
 export const PLANET_DATA = [
   {
     name: 'Sun',
@@ -65,7 +67,7 @@ export const PLANET_DATA = [
     gravity: 1.1,
     light: 1.05,
     texWidth: 2048,
-    atmosphere: { thickness: 0.06, hR: 0.16, hM: 0.05, tauR: [0.30, 0.24, 0.13], tauM: 0.2, g: 0.7, sunE: 4 },
+    atmosphere: { thickness: 0.06, hR: 0.16, hM: 0.05, tauR: [0.30, 0.24, 0.13], tauM: 0.2, g: 0.7, sunE: 4, ground: 0.75 },
     details: {
       mass: '4.867 × 10²⁴ kg (0.815 Erdmassen)',
       temp: '462 °C (Heißester Planet)',
@@ -85,8 +87,9 @@ export const PLANET_DATA = [
     light: 1.0,
     bump: 3,
     texWidth: 4096,
+    auxMap: 4096, // city lights and clouds: fine enough for villages and highways
     clouds: { altitude: 0.006 },
-    atmosphere: { thickness: 0.04, hR: 0.11, hM: 0.022, tauR: [0.055, 0.13, 0.32], tauM: 0.012, g: 0.76, sunE: 4.5 },
+    atmosphere: { thickness: 0.04, hR: 0.11, hM: 0.022, tauR: [0.055, 0.13, 0.32], tauM: 0.012, g: 0.76, sunE: 4.5, ground: 0.3, ozone: [0.012, 0.034, 0.0015] },
     details: {
       mass: '5.972 × 10²⁴ kg',
       temp: '-88 °C bis 58 °C',
@@ -106,7 +109,7 @@ export const PLANET_DATA = [
     light: 0.95,
     bump: 3.5,
     texWidth: 2048,
-    atmosphere: { thickness: 0.035, hR: 0.15, hM: 0.06, tauR: [0.07, 0.04, 0.02], tauM: 0.06, g: 0.65, sunE: 5 },
+    atmosphere: { thickness: 0.035, hR: 0.15, hM: 0.06, tauR: [0.07, 0.04, 0.02], tauM: 0.06, g: 0.65, sunE: 5, ground: 0.25 },
     details: {
       mass: '6.390 × 10²³ kg (0.107 Erdmassen)',
       temp: '-143 °C bis 35 °C',
@@ -125,7 +128,7 @@ export const PLANET_DATA = [
     gravity: 2.4,
     light: 1.0,
     texWidth: 4096,
-    atmosphere: { thickness: 0.018, hR: 0.2, hM: 0.05, tauR: [0.06, 0.07, 0.09], tauM: 0.04, g: 0.7, sunE: 4.5 },
+    atmosphere: { thickness: 0.018, hR: 0.2, hM: 0.05, tauR: [0.06, 0.07, 0.09], tauM: 0.04, g: 0.7, sunE: 4.5, ground: 0.5 },
     details: {
       mass: '1.898 × 10²⁷ kg (318 Erdmassen)',
       temp: '-108 °C',
@@ -145,7 +148,7 @@ export const PLANET_DATA = [
     light: 1.0,
     texWidth: 2048,
     rings: { inner: 1.11, outer: 2.35 },
-    atmosphere: { thickness: 0.02, hR: 0.2, hM: 0.05, tauR: [0.08, 0.075, 0.06], tauM: 0.04, g: 0.7, sunE: 4.5 },
+    atmosphere: { thickness: 0.02, hR: 0.2, hM: 0.05, tauR: [0.08, 0.075, 0.06], tauM: 0.04, g: 0.7, sunE: 4.5, ground: 0.45 },
     details: {
       mass: '5.683 × 10²⁶ kg (95 Erdmassen)',
       temp: '-139 °C',
@@ -165,7 +168,7 @@ export const PLANET_DATA = [
     light: 0.95,
     texWidth: 1024,
     rings: { inner: 1.6, outer: 2.05 },
-    atmosphere: { thickness: 0.025, hR: 0.2, hM: 0.05, tauR: [0.03, 0.12, 0.16], tauM: 0.03, g: 0.7, sunE: 4.5 },
+    atmosphere: { thickness: 0.025, hR: 0.2, hM: 0.05, tauR: [0.03, 0.12, 0.16], tauM: 0.03, g: 0.7, sunE: 4.5, ground: 0.4 },
     details: {
       mass: '8.681 × 10²⁵ kg (14 Erdmassen)',
       temp: '-197 °C',
@@ -184,7 +187,7 @@ export const PLANET_DATA = [
     gravity: 1.3,
     light: 0.95,
     texWidth: 2048,
-    atmosphere: { thickness: 0.025, hR: 0.2, hM: 0.05, tauR: [0.03, 0.09, 0.28], tauM: 0.03, g: 0.7, sunE: 4.5 },
+    atmosphere: { thickness: 0.025, hR: 0.2, hM: 0.05, tauR: [0.03, 0.09, 0.28], tauM: 0.03, g: 0.7, sunE: 4.5, ground: 0.4 },
     details: {
       mass: '1.024 × 10²⁶ kg (17 Erdmassen)',
       temp: '-201 °C',
@@ -281,7 +284,7 @@ export const MOON_DATA = [
     // Orange smog of tholins that swallows blue light, under a thin blue haze high above it
     atmosphere: {
       thickness: 0.2, hR: 0.6, hM: 0.32, tauR: [0.012, 0.03, 0.09], tauM: 2.5, g: 0.45, sunE: 30,
-      mieCol: [1.0, 0.74, 0.34], mieExt: [1.1, 1.4, 2.3], steps: 40
+      mieCol: [1.0, 0.74, 0.34], mieExt: [1.1, 1.4, 2.3], steps: 40, ground: 0.2, ms: 0.2
     },
     details: {
       mass: '1,35 × 10²³ kg (0,023 Erdmassen)',
@@ -581,7 +584,9 @@ export class SolarSystem {
     this.scene.add(this.skyGroup);
 
     // The Milky Way, nebulae and faint stars baked into one sky map; bright stars and far galaxies on top
-    this.skyGroup.add(createSkySphere(this.renderer));
+    const skySphere = createSkySphere(this.renderer);
+    this.skyTexture = skySphere.material.uniforms.uSky.value;
+    this.skyGroup.add(skySphere);
     this.createStarfield();
     this.createGalaxies();
     this.zodiacal = new THREE.Mesh(
@@ -613,8 +618,11 @@ export class SolarSystem {
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
 
-    // Light thrown back by the nearest planet's day side onto the ship's shadowed side
+    // Light thrown back by the nearest planet's day side onto the ship's shadowed side. Hulls outside get it from
+    // the environment map (envProbe.js: the lit disc itself, in its colours); this light is kept on a layer the camera
+    // does not render, as the measure the cockpit and the walkable interior light themselves by
     this.fillLight = new THREE.DirectionalLight(0xffffff, 0);
+    this.fillLight.layers.set(1);
     this.scene.add(this.fillLight);
     this.scene.add(this.fillLight.target);
 
@@ -845,6 +853,7 @@ export class SolarSystem {
       this.scene.add(visual.group);
       this.stations.push(st);
     });
+    this.stationLights = new StationLights(this.scene);
   }
 
   createStarfield() {
@@ -1250,6 +1259,7 @@ export class SolarSystem {
       st.mesh.position.copy(st.planetIndex === 0 ? offsetPos : parentPlanet.group.position.clone().add(offsetPos));
       if (delta > 0) st.visual.animate(delta);
     });
+    if (shipPos) this.stationLights.update(this.stations, shipPos);
 
     if (this.comets) this.comets.update(delta, this.time);
 
