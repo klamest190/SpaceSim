@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { GOOD_KEYS } from './world';
 import { glowColor } from './heat';
 import { rng } from './shipModel';
@@ -98,6 +99,9 @@ function finishTexture(c, srgb = true) {
 // Wall plating: big panels with seams, rivets and a little grime. One tile = 2 m.
 function panelTexture() {
   const [c, g] = canvas(512);
+  const [hc, hg] = canvas(512);
+  hg.fillStyle = '#808080';
+  hg.fillRect(0, 0, 512, 512);
   const rand = rng(41);
   g.fillStyle = '#d8d4ca';
   g.fillRect(0, 0, 512, 512);
@@ -113,14 +117,24 @@ function panelTexture() {
       g.strokeStyle = 'rgba(40,36,30,0.7)';
       g.lineWidth = 3;
       g.strokeRect(x + 1.5, y0 + 1.5, w - 3, h - 3);
+      hg.strokeStyle = '#1a1a1a';
+      hg.lineWidth = 5;
+      hg.strokeRect(x + 2, y0 + 2, w - 4, h - 4);
       g.fillStyle = 'rgba(60,54,46,0.5)';
+      hg.fillStyle = '#d8d8d8';
       for (let i = x + 10; i < x + w - 6; i += 24) {
         g.beginPath(); g.arc(i, y0 + 9, 2, 0, 7); g.fill();
         g.beginPath(); g.arc(i, y0 + h - 9, 2, 0, 7); g.fill();
+        hg.beginPath(); hg.arc(i, y0 + 9, 3, 0, 7); hg.fill();
+        hg.beginPath(); hg.arc(i, y0 + h - 9, 3, 0, 7); hg.fill();
       }
       if (rand() < 0.25 && w > 150) {
         g.fillStyle = 'rgba(30,28,24,0.55)';
-        for (let i = 0; i < 6; i++) g.fillRect(x + 24, y0 + 30 + i * 10, w - 48, 4);
+        hg.fillStyle = '#303030';
+        for (let i = 0; i < 6; i++) {
+          g.fillRect(x + 24, y0 + 30 + i * 10, w - 48, 4);
+          hg.fillRect(x + 24, y0 + 30 + i * 10, w - 48, 5);
+        }
       }
       x += w;
     }
@@ -138,12 +152,17 @@ function panelTexture() {
     g.fillStyle = grad;
     g.fillRect(x, y, 3 + rand() * 6, 60);
   }
-  return finishTexture(c);
+  const map = finishTexture(c);
+  map.userData.height = finishTexture(hc, false);
+  return map;
 }
 
 // Deck plates: diamond tread. One tile = 1 m.
 function treadTexture() {
   const [c, g] = canvas(256);
+  const [hc, hg] = canvas(256);
+  hg.fillStyle = '#707070';
+  hg.fillRect(0, 0, 256, 256);
   g.fillStyle = '#8c8c88';
   g.fillRect(0, 0, 256, 256);
   for (let y = 0; y < 256; y += 16) {
@@ -157,17 +176,28 @@ function treadTexture() {
       g.fillStyle = '#5a5a56';
       g.fillRect(-5, 1.6, 10, 1);
       g.restore();
+      hg.save();
+      hg.translate(x + o + 4, y + 8);
+      hg.rotate((y / 16) % 2 ? 0.8 : -0.8);
+      hg.fillStyle = '#e0e0e0';
+      hg.fillRect(-5, -1.8, 10, 3.6);
+      hg.restore();
     }
   }
   g.strokeStyle = '#3a3a36';
   g.lineWidth = 3;
   g.strokeRect(1.5, 1.5, 253, 253);
+  hg.strokeStyle = '#101010';
+  hg.lineWidth = 4;
+  hg.strokeRect(2, 2, 252, 252);
   const rand = rng(9);
   for (let i = 0; i < 300; i++) {
     g.fillStyle = `rgba(30,26,20,${0.05 + rand() * 0.12})`;
     g.fillRect(rand() * 256, rand() * 256, 2 + rand() * 6, 2 + rand() * 6);
   }
-  return finishTexture(c);
+  const map = finishTexture(c);
+  map.userData.height = finishTexture(hc, false);
+  return map;
 }
 
 // Painted metal for furniture, consoles and machinery: almost flat, a little wear
@@ -298,6 +328,12 @@ const FRAG = /* glsl */ `
   uniform float uUseUv;
   uniform float uSpec;
   uniform float uAlphaTest;
+  uniform float uBump;       // depth of seams, rivets and tread (from uHeight, or the colour's darkness)
+  uniform sampler2D uHeight;
+  uniform float uHasHeight;
+  uniform float uGloss;      // highlight sharpness
+  uniform float uWallTone;   // 1: wall plating, with a darker dado below the hip stripe
+  uniform vec4 uRoomBox[4];  // per room: half width, z0, z1
   uniform vec3 uLampPos[MAX_LAMPS];
   uniform vec3 uLampCol[MAX_LAMPS];
   uniform float uLampRoom[MAX_LAMPS];
@@ -343,10 +379,60 @@ const FRAG = /* glsl */ `
     return lit;
   }
 
+  float lum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+  // Normal tilted by the texture read as a height map: dark seams and grooves are low (Mikkelsen's surface
+  // gradient, as in three.js bump mapping)
+  vec3 bumpNormal(vec3 N, vec2 uv) {
+    if (uBump <= 0.0) return N;
+    vec2 du = dFdx(uv), dv = dFdy(uv);
+    // Heights from a blurred mip (bias), so only seams and tread read as relief, not the fine grime
+    float dhx, dhy;
+    if (uHasHeight > 0.5) {
+      float h0 = texture2D(uHeight, uv).r;
+      dhx = texture2D(uHeight, uv + du).r - h0;
+      dhy = texture2D(uHeight, uv + dv).r - h0;
+    } else {
+      float h0 = lum(texture2D(uMap, uv, 2.0).rgb);
+      dhx = lum(texture2D(uMap, uv + du * 2.0, 2.0).rgb) - h0;
+      dhy = lum(texture2D(uMap, uv + dv * 2.0, 2.0).rgb) - h0;
+    }
+    vec3 dpx = dFdx(vPos), dpy = dFdy(vPos);
+    vec3 r1 = cross(dpy, N), r2 = cross(N, dpx);
+    float det = dot(dpx, r1);
+    vec3 grad = sign(det) * (dhx * r1 + dhy * r2);
+    return normalize(abs(det) * N - grad * uBump);
+  }
+
+  // Ambient occlusion of the box-shaped rooms, worked out from the walls themselves: light from the room reaches
+  // less into the corners and along the edges where wall meets floor, ceiling or bulkhead
+  float roomAO(vec3 p, vec3 N) {
+    float room = vRoom;
+    if (room < 0.0) {
+      float z = p.z + N.z * 0.06;
+      room = z < uRoomBox[0].z ? 0.0 : z < uRoomBox[1].z ? 1.0 : z < uRoomBox[2].z ? 2.0 : 3.0;
+    }
+    vec4 b = room < 0.5 ? uRoomBox[0] : room < 1.5 ? uRoomBox[1] : room < 2.5 ? uRoomBox[2] : uRoomBox[3];
+    float dx = b.x - abs(p.x);
+    float dz = min(p.z - b.y, b.z - p.z);
+    float px = 1.0 - smoothstep(0.0, 0.6, dx);
+    float pz = 1.0 - smoothstep(0.0, 0.6, dz);
+    float pf = 1.0 - smoothstep(0.0, 0.7, p.y - uFloorY);
+    float pc = 1.0 - smoothstep(0.0, 0.45, uCeilY - p.y);
+    // A plane does not shade itself
+    if (abs(N.x) > 0.7) px = 0.0;
+    if (abs(N.z) > 0.7) pz = 0.0;
+    if (N.y > 0.7) pf = 0.0;
+    if (N.y < -0.7) pc = 0.0;
+    float occ = 0.3 * px + 0.3 * pz + 0.42 * pf + 0.3 * pc + 0.35 * (px * pz + px * pf + pz * pf);
+    return 1.0 - clamp(occ, 0.0, 0.62);
+  }
+
   void main() {
     #include <logdepthbuf_fragment>
     vec3 N = normalize(vNrm);
     if (!gl_FrontFacing) N = -N;
+    vec3 Ngeo = N;
     vec2 uv;
     if (uUseUv > 0.5) uv = vUv;
     else {
@@ -359,6 +445,9 @@ const FRAG = /* glsl */ `
     vec4 tex = texture2D(uMap, uv);
     if (tex.a < uAlphaTest) discard;
     vec3 albedo = tex.rgb * vTint;
+    N = bumpNormal(N, uv);
+    // Two-tone walls: cool grey dado below the hip stripe, the bone plating above
+    if (uWallTone > 0.5 && abs(Ngeo.y) < 0.3 && vPos.y < 0.05) albedo *= vec3(0.56, 0.6, 0.66);
 
     vec3 V = normalize(uEye - vPos);
     vec3 light = uAmbient;
@@ -370,9 +459,11 @@ const FRAG = /* glsl */ `
       vec3 L = d / max(dist, 1e-3);
       float att = 1.0 / (1.0 + 0.55 * dist * dist);
       float ndl = dot(N, L);
-      light += uLampCol[i] * att * max(ndl * 0.8 + 0.2, 0.0);
+      light += uLampCol[i] * att * max(ndl * 0.9 + 0.1, 0.0);
       vec3 H = normalize(L + V);
-      spec += uLampCol[i] * att * pow(max(dot(N, H), 0.0), 40.0) * step(0.0, ndl);
+      // Normalised Blinn-Phong with a touch of Fresnel: sharp glosses are small and bright, matte ones broad
+      float fres = 0.6 + 0.4 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
+      spec += uLampCol[i] * att * pow(max(dot(N, H), 0.0), uGloss) * (uGloss + 8.0) / 48.0 * fres * step(0.0, ndl);
     }
     float sunN = dot(N, uSunDir);
     if (sunN > 0.0 && dot(uSunCol, uSunCol) > 1e-6) {
@@ -384,10 +475,8 @@ const FRAG = /* glsl */ `
     if (fillN > 0.0 && dot(uFillCol, uFillCol) > 1e-6) {
       light += uFillCol * fillN * throughWindow(vPos, uFillDir);
     }
-    // Corners darken: the floor and ceiling edges, the bottom of the walls
-    float ao = mix(0.62, 1.0, smoothstep(0.0, 0.45, vPos.y - uFloorY)) * mix(0.75, 1.0, smoothstep(0.0, 0.35, uCeilY - vPos.y));
-    if (N.y > 0.5) ao = mix(0.8, 1.0, ao);
-    vec3 col = albedo * light * ao + spec * uSpec;
+    float ao = roomAO(vPos, Ngeo);
+    vec3 col = albedo * light * ao + spec * uSpec * mix(0.5, 1.0, ao);
     gl_FragColor = vec4(col, 1.0);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
@@ -485,10 +574,10 @@ export class ShipInterior {
     this.shared = this.makeSharedUniforms();
     this.textures = { panel: panelTexture(), tread: treadTexture(), plain: plainTexture(), crate: crateTexture() };
     this.materials = {
-      panel: this.litMaterial(this.textures.panel, { texScale: 0.5, spec: 0.12 }),
-      tread: this.litMaterial(this.textures.tread, { texScale: 1.0, spec: 0.45 }),
-      plain: this.litMaterial(this.textures.plain, { texScale: 0.8, spec: 0.3 }),
-      crate: this.litMaterial(this.textures.crate, { uv: true, spec: 0.15 }),
+      panel: this.litMaterial(this.textures.panel, { texScale: 0.5, spec: 0.14, bump: 1.4, gloss: 24, wallTone: true }),
+      tread: this.litMaterial(this.textures.tread, { texScale: 1.0, spec: 0.5, bump: 1.2, gloss: 30 }),
+      plain: this.litMaterial(this.textures.plain, { texScale: 0.8, spec: 0.3, bump: 0, gloss: 50 }),
+      crate: this.litMaterial(this.textures.crate, { uv: true, spec: 0.15, bump: 0.3, gloss: 20 }),
     };
     this.parts = {};
     this.lampPanels = [];
@@ -545,10 +634,11 @@ export class ShipInterior {
       uEye: { value: new THREE.Vector3() },
       uFloorY: { value: FLOOR_Y },
       uCeilY: { value: CEIL_Y },
+      uRoomBox: { value: [BRIDGE, CREW, CARGO, ENGINE].map((r) => new THREE.Vector4(r.x, r.z0, r.z1, 0)) },
     };
   }
 
-  litMaterial(map, { texScale = 1, spec = 0.2, uv = false, alphaTest = 0 } = {}) {
+  litMaterial(map, { texScale = 1, spec = 0.2, uv = false, alphaTest = 0, bump = 0, gloss = 40, wallTone = false } = {}) {
     const mat = new THREE.ShaderMaterial({
       uniforms: {
         ...this.shared,
@@ -557,6 +647,11 @@ export class ShipInterior {
         uUseUv: { value: uv ? 1 : 0 },
         uSpec: { value: spec },
         uAlphaTest: { value: alphaTest },
+        uBump: { value: bump },
+        uHeight: { value: map.userData.height || null },
+        uHasHeight: { value: map.userData.height ? 1 : 0 },
+        uGloss: { value: gloss },
+        uWallTone: { value: wallTone ? 1 : 0 },
         uLocal: { value: new THREE.Matrix4() },
       },
       vertexShader: VERT,
@@ -602,6 +697,38 @@ export class ShipInterior {
     const g = new THREE.BoxGeometry(Math.abs(x1 - x0), Math.abs(y1 - y0), Math.abs(z1 - z0));
     g.translate((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
     this.add(mat, room, color, g);
+  }
+
+  // A padded or cast part with rounded edges, centred at pos, turned by rot (Euler)
+  soft(mat, room, color, w, h, d, r, pos, rot = null) {
+    const g = new RoundedBoxGeometry(w, h, d, 3, Math.min(r, w / 2, h / 2, d / 2) * 0.999);
+    this.shape(mat, room, color, g, pos, rot);
+  }
+
+  // A straight pipe along z from z0 to z1 at (x, y), clamped to the wall or ceiling by brackets every 0.8 m
+  pipeRun(room, color, x, y, z0, z1, r, bracketTo = null) {
+    const len = z1 - z0;
+    this.shape('plain', room, color, new THREE.CylinderGeometry(r, r, len, 12), [x, y, (z0 + z1) / 2], [Math.PI / 2, 0, 0]);
+    for (let z = z0 + 0.35; z < z1 - 0.2; z += 0.8) {
+      this.shape('plain', room, 0x45484c, new THREE.CylinderGeometry(r * 1.35, r * 1.35, 0.05, 12), [x, y, z], [Math.PI / 2, 0, 0]);
+      if (bracketTo === 'ceiling') this.box('plain', room, 0x45484c, x - 0.015, x + 0.015, y, CEIL_Y, z - 0.02, z + 0.02);
+      else if (bracketTo !== null) this.box('plain', room, 0x45484c, Math.min(x, bracketTo), Math.max(x, bracketTo), y - 0.015, y + 0.015, z - 0.02, z + 0.02);
+    }
+  }
+
+  // Services overhead: pipes, a coolant line and a cable bundle along both upper wall edges of a room
+  overheadServices(room, r, z0 = r.z0 + 0.12, z1 = r.z1 - 0.12) {
+    [-1, 1].forEach((side) => {
+      const wx = side * r.x;
+      this.pipeRun(room, 0x8e9296, side * (r.x - 0.1), CEIL_Y - 0.1, z0, z1, 0.045, wx);
+      this.pipeRun(room, side < 0 ? 0xb06a22 : 0x4a6a8a, side * (r.x - 0.24), CEIL_Y - 0.08, z0, z1, 0.035, 'ceiling');
+      // Cable bundle in a tray just below
+      this.box('plain', room, 0x2c2e30, Math.min(wx, side * (r.x - 0.16)), Math.max(wx, side * (r.x - 0.16)), CEIL_Y - 0.22, CEIL_Y - 0.2, z0, z1);
+      [0, 1, 2].forEach((k) => {
+        this.shape('plain', room, [0x1e1f21, 0x6a2a24, 0x2a3a5a][k], new THREE.CylinderGeometry(0.013, 0.013, z1 - z0, 6),
+          [side * (r.x - 0.04 - k * 0.035), CEIL_Y - 0.185, (z0 + z1) / 2], [Math.PI / 2, 0, 0]);
+      });
+    });
   }
 
   // A transformed geometry (cylinder, shape) into the merge
@@ -801,19 +928,38 @@ export class ShipInterior {
 
     // Pilot seat: base, cushion, backrest, headrest, armrests with the stick and the throttle
     const s = SEAT_POS;
-    const SEAT_RED = 0x7a3a2c;
-    this.box('plain', room, 0x2a2c2e, s.x - 0.18, s.x + 0.18, FLOOR_Y, FLOOR_Y + 0.38, s.z - 0.18, s.z + 0.18);
-    this.box('plain', room, SEAT_RED, s.x - 0.32, s.x + 0.32, FLOOR_Y + 0.38, FLOOR_Y + 0.52, s.z - 0.3, s.z + 0.28);
-    const back = new THREE.BoxGeometry(0.62, 0.95, 0.14);
-    back.applyQuaternion(_q.setFromAxisAngle(new THREE.Vector3(1, 0, 0), 0.18));
-    back.translate(s.x, FLOOR_Y + 1.0, s.z + 0.32);
-    this.add('plain', room, SEAT_RED, back);
-    this.box('plain', room, SEAT_RED, s.x - 0.17, s.x + 0.17, FLOOR_Y + 1.5, FLOOR_Y + 1.74, s.z + 0.38, s.z + 0.5);
+    const LEATHER = 0x5a2a20, FRAME = 0x2a2c2e, METAL = 0x6a6e72;
+    // Pedestal: a round foot, a column with a gas spring sleeve, a cross plate under the cushion
+    this.shape('plain', room, FRAME, new THREE.CylinderGeometry(0.3, 0.34, 0.05, 24), [s.x, FLOOR_Y + 0.025, s.z]);
+    this.shape('plain', room, METAL, new THREE.CylinderGeometry(0.065, 0.065, 0.3, 16), [s.x, FLOOR_Y + 0.2, s.z]);
+    this.shape('plain', room, FRAME, new THREE.CylinderGeometry(0.085, 0.085, 0.14, 16), [s.x, FLOOR_Y + 0.12, s.z]);
+    this.soft('plain', room, FRAME, 0.56, 0.05, 0.52, 0.02, [s.x, FLOOR_Y + 0.375, s.z]);
+    // Padded seat and backrest in worn leather, a padded headrest on two posts
+    this.soft('plain', room, LEATHER, 0.6, 0.13, 0.56, 0.055, [s.x, FLOOR_Y + 0.46, s.z - 0.01]);
+    this.soft('plain', room, LEATHER, 0.48, 0.05, 0.4, 0.02, [s.x, FLOOR_Y + 0.535, s.z - 0.03]);
+    this.soft('plain', room, FRAME, 0.62, 0.92, 0.07, 0.03, [s.x, FLOOR_Y + 1.0, s.z + 0.36], [0.18, 0, 0]);
+    this.soft('plain', room, LEATHER, 0.56, 0.84, 0.13, 0.06, [s.x, FLOOR_Y + 1.0, s.z + 0.3], [0.18, 0, 0]);
+    // side bolsters on the backrest
+    [-1, 1].forEach((side) => this.soft('plain', room, LEATHER, 0.1, 0.7, 0.16, 0.05, [s.x + side * 0.27, FLOOR_Y + 0.95, s.z + 0.28], [0.18, 0, side * 0.08]));
+    [-1, 1].forEach((side) => this.shape('plain', room, METAL, new THREE.CylinderGeometry(0.012, 0.012, 0.16, 8), [s.x + side * 0.1, FLOOR_Y + 1.52, s.z + 0.43], [0.18, 0, 0]));
+    this.soft('plain', room, LEATHER, 0.36, 0.22, 0.12, 0.05, [s.x, FLOOR_Y + 1.64, s.z + 0.47], [0.18, 0, 0]);
     [-1, 1].forEach((side) => {
-      this.box('plain', room, 0x2a2c2e, s.x + side * 0.36 - 0.06, s.x + side * 0.36 + 0.06, FLOOR_Y + 0.52, FLOOR_Y + 0.72, s.z - 0.3, s.z + 0.25);
-      // stick / throttle
-      const g = new THREE.CylinderGeometry(0.025, 0.03, 0.22, 8);
-      this.shape('plain', room, 0x1c1c1e, g, [s.x + side * 0.36, FLOOR_Y + 0.83, s.z - 0.22]);
+      // Armrest on a strut, padded on top, with the stick (right) and the throttle (left) at its front
+      this.box('plain', room, FRAME, s.x + side * 0.36 - 0.025, s.x + side * 0.36 + 0.025, FLOOR_Y + 0.4, FLOOR_Y + 0.62, s.z + 0.12, s.z + 0.17);
+      this.soft('plain', room, FRAME, 0.11, 0.07, 0.56, 0.03, [s.x + side * 0.36, FLOOR_Y + 0.64, s.z - 0.02]);
+      this.soft('plain', room, LEATHER, 0.09, 0.04, 0.4, 0.02, [s.x + side * 0.36, FLOOR_Y + 0.69, s.z + 0.04]);
+      this.shape('plain', room, FRAME, new THREE.CylinderGeometry(0.035, 0.04, 0.04, 12), [s.x + side * 0.36, FLOOR_Y + 0.69, s.z - 0.24]);
+      if (side > 0) {
+        // flight stick: a grip on a boot
+        this.shape('plain', room, 0x1c1c1e, new THREE.CylinderGeometry(0.018, 0.022, 0.14, 10), [s.x + 0.36, FLOOR_Y + 0.78, s.z - 0.24]);
+        this.soft('plain', room, 0x1c1c1e, 0.05, 0.11, 0.05, 0.02, [s.x + 0.36, FLOOR_Y + 0.88, s.z - 0.245], [0.2, 0, 0]);
+        this.shape('plain', room, 0xc03020, new THREE.CylinderGeometry(0.008, 0.008, 0.012, 8), [s.x + 0.36, FLOOR_Y + 0.94, s.z - 0.255]);
+      } else {
+        // throttle lever with its quadrant
+        this.soft('plain', room, 0x3a3c3e, 0.06, 0.03, 0.16, 0.01, [s.x - 0.36, FLOOR_Y + 0.72, s.z - 0.22]);
+        this.shape('plain', room, 0x1c1c1e, new THREE.CylinderGeometry(0.01, 0.01, 0.12, 8), [s.x - 0.36, FLOOR_Y + 0.79, s.z - 0.2], [-0.35, 0, 0]);
+        this.soft('plain', room, 0xb8741f, 0.07, 0.035, 0.04, 0.012, [s.x - 0.36, FLOOR_Y + 0.85, s.z - 0.22]);
+      }
     });
     this.obstacles.push([s.x - 0.42, s.x + 0.42, s.z - 0.38, s.z + 0.58]);
     this.interact('seat', s.x, s.z, 1.45, 'Hinsetzen und fliegen');
@@ -839,9 +985,9 @@ export class ShipInterior {
     const room = ROOMS.crew;
     // Table with a bench against the left wall, under the porthole
     const tx = -CREW.x;
-    this.box('plain', room, 0x6a5a48, tx + 0.05, tx + 0.95, FLOOR_Y + 0.72, FLOOR_Y + 0.78, -1.55, -0.25);
+    this.soft('plain', room, 0x6a5a48, 0.9, 0.06, 1.3, 0.025, [tx + 0.5, FLOOR_Y + 0.75, -0.9]);
     this.box('plain', room, 0x2e3032, tx + 0.45, tx + 0.55, FLOOR_Y, FLOOR_Y + 0.72, -0.95, -0.85);
-    this.box('plain', room, 0x7a3a2c, tx + 0.05, tx + 0.55, FLOOR_Y + 0.4, FLOOR_Y + 0.48, -2.05, -1.65);
+    this.soft('plain', room, 0x5a2a20, 0.5, 0.09, 0.4, 0.035, [tx + 0.3, FLOOR_Y + 0.445, -1.85]);
     this.box('plain', room, 0x2e3032, tx + 0.05, tx + 0.55, FLOOR_Y, FLOOR_Y + 0.4, -2.05, -1.65);
     // mug on the table
     this.shape('plain', room, 0xd8d0c0, new THREE.CylinderGeometry(0.045, 0.04, 0.1, 12), [tx + 0.6, FLOOR_Y + 0.83, -0.7]);
@@ -850,8 +996,10 @@ export class ShipInterior {
 
     // Bunk aft on the left with a locker above
     this.box('plain', room, 0x3a3c3e, tx, tx + 0.95, FLOOR_Y, FLOOR_Y + 0.45, 0.6, 2.9);
-    this.box('plain', room, 0x5a6a7a, tx + 0.02, tx + 0.92, FLOOR_Y + 0.45, FLOOR_Y + 0.6, 0.65, 2.85);
-    this.box('plain', room, 0xe8e2d8, tx + 0.1, tx + 0.6, FLOOR_Y + 0.6, FLOOR_Y + 0.7, 2.35, 2.8);
+    this.soft('plain', room, 0x4e5c6a, 0.9, 0.15, 2.2, 0.06, [tx + 0.47, FLOOR_Y + 0.525, 1.75]);
+    // folded blanket at the foot, a pillow at the head
+    this.soft('plain', room, 0x6a3a2a, 0.86, 0.06, 0.5, 0.025, [tx + 0.47, FLOOR_Y + 0.62, 0.95]);
+    this.soft('plain', room, 0xe8e2d8, 0.55, 0.1, 0.38, 0.045, [tx + 0.4, FLOOR_Y + 0.64, 2.55]);
     this.box('panel', room, 0xb8b2a6, tx, tx + 0.55, 1.15, CEIL_Y, 0.6, 2.9);
     this.obstacles.push([tx, tx + 1.0, 0.55, 2.95]);
     this.interact('bunk', tx + 0.8, 1.7, 1.2, 'Koje: hier ist nur Zeit zum Ausruhen, wenn niemand schießt');
@@ -904,7 +1052,7 @@ export class ShipInterior {
     const lx = -CARGO.x + 0.02;
     this.box('plain', room, 0x3a3c3e, lx, lx + 0.04, FLOOR_Y + 0.05, FLOOR_Y + 2.05, 5.2, 6.4);
     this.box('plain', room, 0xc07a24, lx + 0.03, lx + 0.06, FLOOR_Y + 1.9, FLOOR_Y + 2.0, 5.25, 6.35);
-    this.sign('SCHLEUSE', 'NUR IM DOCK ÖFFNEN', [lx + 0.07, 1.62, 5.8], Math.PI / 2, room, 0.9);
+    this.sign('SCHLEUSE', 'NUR IM DOCK ÖFFNEN', [lx + 0.07, 1.42, 5.8], Math.PI / 2, room, 0.9);
     this.interact('airlock', lx + 0.5, 5.8, 1.1, 'Luftschleuse');
 
     // Manifest screen on the forward bulkhead, beside the door
@@ -913,6 +1061,12 @@ export class ShipInterior {
 
     this.lampPanel(0, CEIL_Y - 0.06, 4.4, 1.4, 0.35, room);
     this.lampPanel(0, CEIL_Y - 0.06, 7.3, 1.4, 0.35, room);
+    this.overheadServices(room, CARGO);
+    // Handrails between the wall ribs
+    [-1, 1].forEach((side) => {
+      this.shape('plain', room, 0xb8741f, new THREE.CylinderGeometry(0.025, 0.025, CARGO.z1 - CARGO.z0 - 0.4, 10), [side * (CARGO.x - 0.14), 0.3, (CARGO.z0 + CARGO.z1) / 2], [Math.PI / 2, 0, 0]);
+      for (let z = CARGO.z0 + 0.6; z < CARGO.z1; z += 1.15) this.box('plain', room, 0x45484c, Math.min(side * CARGO.x, side * (CARGO.x - 0.14)), Math.max(side * CARGO.x, side * (CARGO.x - 0.14)), 0.28, 0.32, z - 0.02, z + 0.02);
+    });
     this.sign('FRACHTRAUM', 'MAX. LAST SIEHE LISTE', [-1.7, 1.45, CARGO.z0 + 0.105], 0, room, 1.2);
     this.sign('MASCHINEN', 'HEISSE OBERFLÄCHEN', [0, 1.6, CARGO.z1 - 0.105], Math.PI, room, 0.9);
   }
@@ -961,6 +1115,14 @@ export class ShipInterior {
     // Engineering panel on the right wall
     this.screens.reactor = this.screen('reactor', [ENGINE.x - 0.03, 0.8, 9.4], -Math.PI / 2, 0.8, 0.5, 0, room);
     this.lampPanel(0, CEIL_Y - 0.06, 9.3, 0.8, 0.3, room);
+    this.overheadServices(room, ENGINE);
+    // Risers in the corners, with valves
+    [[-1, 1], [1, 1], [-1, -1], [1, -1]].forEach(([sx, sz]) => {
+      const x = sx * (ENGINE.x - 0.15), z = sz > 0 ? ENGINE.z1 - 0.18 : ENGINE.z0 + 0.25;
+      this.shape('plain', room, sz > 0 ? 0x8a6a40 : 0x8e9296, new THREE.CylinderGeometry(0.06, 0.06, CEIL_Y - FLOOR_Y, 12), [x, (FLOOR_Y + CEIL_Y) / 2, z]);
+      this.shape('plain', room, 0x45484c, new THREE.CylinderGeometry(0.085, 0.085, 0.12, 12), [x, 0.2, z]);
+      this.shape('plain', room, 0xc03020, new THREE.TorusGeometry(0.07, 0.012, 6, 16), [x - sx * 0.1, 0.2, z], [0, Math.PI / 2, 0]);
+    });
     this.sign('REAKTOR', 'ZUTRITT NUR MIT DOSIMETER', [0, 1.5, ENGINE.z1 - 0.005], Math.PI, room, 1.0);
   }
 
